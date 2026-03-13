@@ -19,15 +19,25 @@ ladder takes a JSON request on stdin (or from a file argument), exports the requ
 5. Computes SHA-256 inline while streaming data to disk (no second pass over the file)
 6. Writes a JSON `ExportResponse` to stdout
 
-## Building
+## Installing
 
 Requires macOS 13+ and Swift 5.9+.
 
 ```
-swift build -c release
+make install
 ```
 
-The binary is at `.build/release/ladder`.
+This builds a release binary and installs it to `/usr/local/bin/ladder`. To install elsewhere:
+
+```
+make install PREFIX=~/.local
+```
+
+To uninstall:
+
+```
+make uninstall
+```
 
 ## Usage
 
