@@ -8,7 +8,7 @@ A macOS CLI tool that exports original photos and videos from the macOS Photos l
 
 ## What it does
 
-ladder takes a JSON request on stdin (or from a file argument), exports the requested assets from the Photos library to a staging directory, computes a SHA-256 hash for each file during export, and writes a JSON response to stdout. It is designed to be called as a subprocess by [attic](../attic), the Deno/TypeScript component of the photo-cloud backup system.
+ladder takes a JSON request on stdin (or from a file argument), exports the requested assets from the Photos library to a staging directory, computes a SHA-256 hash for each file during export, and writes a JSON response to stdout. It is designed to be called as a subprocess by [attic](https://github.com/tijs/attic), the Deno/TypeScript component of the photo-cloud backup system.
 
 ## How it works
 
