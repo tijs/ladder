@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="ladder-logo.png" width="128" alt="ladder logo">
+</p>
+
 # ladder
 
 A macOS CLI tool that exports original photos and videos from the macOS Photos library using PhotoKit.
