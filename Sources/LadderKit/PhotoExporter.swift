@@ -99,7 +99,7 @@ public final class PhotoExporter: Sendable {
 }
 
 /// Internal type for passing errors through TaskGroup.
-struct ExportErrorPair: Error {
+struct ExportErrorPair: Error, Sendable {
     let uuid: String
     let message: String
 }

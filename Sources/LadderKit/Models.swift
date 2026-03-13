@@ -1,7 +1,7 @@
 import Foundation
 
 /// Input: a request to export specific assets by UUID.
-public struct ExportRequest: Codable {
+public struct ExportRequest: Codable, Sendable {
     public let uuids: [String]
     public let stagingDir: String
 
@@ -12,7 +12,7 @@ public struct ExportRequest: Codable {
 }
 
 /// Output: result for a single exported asset.
-public struct ExportResult: Codable {
+public struct ExportResult: Codable, Sendable {
     public let uuid: String
     public let path: String
     public let size: Int64
@@ -27,7 +27,7 @@ public struct ExportResult: Codable {
 }
 
 /// Output: the full response written to stdout.
-public struct ExportResponse: Codable {
+public struct ExportResponse: Codable, Sendable {
     public let results: [ExportResult]
     public let errors: [ExportError]
 
@@ -37,7 +37,7 @@ public struct ExportResponse: Codable {
     }
 }
 
-public struct ExportError: Codable {
+public struct ExportError: Codable, Sendable {
     public let uuid: String
     public let message: String
 
