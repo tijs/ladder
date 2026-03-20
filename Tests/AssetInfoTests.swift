@@ -9,8 +9,9 @@ struct AssetInfoTests {
     func createPhotoAsset() {
         let date = Date(timeIntervalSince1970: 1_700_000_000)
         let album = AlbumInfo(identifier: "album-1", title: "Vacation")
+        let person = PersonInfo(uuid: "person-1", displayName: "Bob")
         let info = AssetInfo(
-            identifier: "ABC-123",
+            identifier: "ABC-123/L0/001",
             creationDate: date,
             kind: .photo,
             pixelWidth: 4032,
@@ -20,11 +21,17 @@ struct AssetInfoTests {
             isFavorite: true,
             originalFilename: "IMG_0001.HEIC",
             uniformTypeIdentifier: "public.heic",
-            hasEdit: false,
-            albums: [album]
+            hasEdit: true,
+            albums: [album],
+            keywords: ["sunset", "beach"],
+            people: [person],
+            assetDescription: "A nice photo",
+            editedAt: date,
+            editor: "com.apple.photos"
         )
 
-        #expect(info.identifier == "ABC-123")
+        #expect(info.identifier == "ABC-123/L0/001")
+        #expect(info.uuid == "ABC-123")
         #expect(info.creationDate == date)
         #expect(info.kind == .photo)
         #expect(info.pixelWidth == 4032)
@@ -34,15 +41,21 @@ struct AssetInfoTests {
         #expect(info.isFavorite == true)
         #expect(info.originalFilename == "IMG_0001.HEIC")
         #expect(info.uniformTypeIdentifier == "public.heic")
-        #expect(info.hasEdit == false)
+        #expect(info.hasEdit == true)
         #expect(info.albums.count == 1)
         #expect(info.albums[0].title == "Vacation")
+        #expect(info.keywords == ["sunset", "beach"])
+        #expect(info.people.count == 1)
+        #expect(info.people[0].displayName == "Bob")
+        #expect(info.assetDescription == "A nice photo")
+        #expect(info.editedAt == date)
+        #expect(info.editor == "com.apple.photos")
     }
 
-    @Test("creates video asset with nil optional fields")
+    @Test("creates video asset with default enrichment fields")
     func createVideoAssetMinimal() {
         let info = AssetInfo(
-            identifier: "VID-456",
+            identifier: "VID-456/L0/001",
             creationDate: nil,
             kind: .video,
             pixelWidth: 1920,
@@ -56,12 +69,38 @@ struct AssetInfoTests {
             albums: []
         )
 
-        #expect(info.identifier == "VID-456")
-        #expect(info.creationDate == nil)
+        #expect(info.uuid == "VID-456")
         #expect(info.kind == .video)
-        #expect(info.latitude == nil)
-        #expect(info.originalFilename == nil)
-        #expect(info.albums.isEmpty)
+        #expect(info.keywords.isEmpty)
+        #expect(info.people.isEmpty)
+        #expect(info.assetDescription == nil)
+        #expect(info.editedAt == nil)
+        #expect(info.editor == nil)
+    }
+
+    @Test("uuid extraction from localIdentifier")
+    func uuidExtraction() {
+        let withSuffix = AssetInfo(
+            identifier: "AAAA-BBBB-CCCC/L0/001",
+            creationDate: nil, kind: .photo,
+            pixelWidth: 1, pixelHeight: 1,
+            latitude: nil, longitude: nil,
+            isFavorite: false, originalFilename: nil,
+            uniformTypeIdentifier: nil, hasEdit: false,
+            albums: []
+        )
+        #expect(withSuffix.uuid == "AAAA-BBBB-CCCC")
+
+        let withoutSuffix = AssetInfo(
+            identifier: "PLAIN-UUID",
+            creationDate: nil, kind: .photo,
+            pixelWidth: 1, pixelHeight: 1,
+            latitude: nil, longitude: nil,
+            isFavorite: false, originalFilename: nil,
+            uniformTypeIdentifier: nil, hasEdit: false,
+            albums: []
+        )
+        #expect(withoutSuffix.uuid == "PLAIN-UUID")
     }
 
     @Test("asset kind raw values match CLI constants")
@@ -79,6 +118,16 @@ struct AssetInfoTests {
         #expect(a == b)
         #expect(a != c)
     }
+
+    @Test("person info equality")
+    func personInfoEquality() {
+        let a = PersonInfo(uuid: "p-1", displayName: "Alice")
+        let b = PersonInfo(uuid: "p-1", displayName: "Alice")
+        let c = PersonInfo(uuid: "p-2", displayName: "Bob")
+
+        #expect(a == b)
+        #expect(a != c)
+    }
 }
 
 @Suite("MockPhotoLibrary Discovery")
@@ -87,7 +136,7 @@ struct MockPhotoLibraryDiscoveryTests {
     func enumerateAssets() {
         let infos = [
             AssetInfo(
-                identifier: "asset-1",
+                identifier: "asset-1/L0/001",
                 creationDate: Date(),
                 kind: .photo,
                 pixelWidth: 100,
@@ -101,7 +150,7 @@ struct MockPhotoLibraryDiscoveryTests {
                 albums: []
             ),
             AssetInfo(
-                identifier: "asset-2",
+                identifier: "asset-2/L0/001",
                 creationDate: nil,
                 kind: .video,
                 pixelWidth: 1920,
@@ -122,8 +171,8 @@ struct MockPhotoLibraryDiscoveryTests {
 
         let enumerated = library.enumerateAssets()
         #expect(enumerated.count == 2)
-        #expect(enumerated[0].identifier == "asset-1")
-        #expect(enumerated[1].identifier == "asset-2")
+        #expect(enumerated[0].uuid == "asset-1")
+        #expect(enumerated[1].uuid == "asset-2")
         #expect(enumerated[1].isFavorite == true)
         #expect(enumerated[1].hasEdit == true)
         #expect(enumerated[1].albums.count == 1)
