@@ -4,97 +4,234 @@
 
 # ladder
 
-A macOS CLI tool that exports original photos and videos from the macOS Photos library using PhotoKit.
+A Swift library and CLI for accessing the macOS Photos library. LadderKit provides asset discovery, metadata enrichment, and file export via PhotoKit and Photos.sqlite.
 
-## What it does
+## LadderKit Library
 
-ladder takes a JSON request on stdin (or from a file argument), exports the requested assets from the Photos library to a staging directory, computes a SHA-256 hash for each file during export, and writes a JSON response to stdout. It is designed to be called as a subprocess by [attic](https://github.com/tijs/attic), the Deno/TypeScript component of the photo-cloud backup system.
+Add LadderKit as a dependency in your `Package.swift`:
 
-## How it works
+```swift
+dependencies: [
+    .package(url: "https://github.com/tijs/ladder", from: "0.2.0"),
+],
+targets: [
+    .target(
+        name: "YourApp",
+        dependencies: [.product(name: "LadderKit", package: "ladder")]
+    ),
+]
+```
 
-1. Reads a JSON `ExportRequest` from stdin (or from a file path passed as the first argument)
-2. Requests Photos library authorization via PhotoKit
-3. Fetches assets by their local identifiers (UUIDs)
-4. Exports each asset's original resource to the staging directory with bounded concurrency (default: 6)
-5. Computes SHA-256 inline while streaming data to disk (no second pass over the file)
-6. Writes a JSON `ExportResponse` to stdout
+Requires macOS 13+.
 
-## Installing
+## API
 
-Requires macOS 13+ and Swift 5.9+.
+### Asset Discovery
+
+Enumerate all non-trashed assets in the Photos library via PhotoKit:
+
+```swift
+import LadderKit
+
+let library = PhotoKitLibrary()
+let count = library.totalAssetCount()
+var assets = library.enumerateAssets()
+// assets: [AssetInfo] sorted by creation date, newest first
+```
+
+Each `AssetInfo` contains core PhotoKit fields: identifier, creation date, media type, dimensions, GPS location, and favorite status.
+
+### Metadata Enrichment
+
+PhotoKit doesn't expose keywords, people, descriptions, albums, filenames, or edit details. These come from Photos.sqlite:
+
+```swift
+// User selects their .photoslibrary bundle (e.g., via NSOpenPanel)
+let libraryURL: URL = ...
+
+// Validate and derive database path
+guard PhotosLibraryPath.validate(libraryURL).isValid,
+      let dbPath = PhotosLibraryPath.databasePath(for: libraryURL)
+else { return }
+
+// Read enrichment data and apply it
+let enrichment = PhotosDatabase.readEnrichment(dbPath: dbPath)
+PhotosDatabase.enrich(&assets, with: enrichment)
+
+// assets now have: originalFilename, uniformTypeIdentifier, albums,
+// keywords, people, description, hasEdit, editedAt, editor
+```
+
+### File Export
+
+Export original photo/video files to a staging directory with inline SHA-256 hashing:
+
+```swift
+let stagingDir = try PathSafety.validateStagingDir("/tmp/photo-export")
+let exporter = PhotoExporter(stagingDir: stagingDir, library: library)
+let response = await exporter.export(uuids: ["B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001"])
+
+for result in response.results {
+    print(result.path)   // exported file path
+    print(result.sha256) // hash computed during streaming write
+    print(result.size)   // file size in bytes
+}
+```
+
+Files are streamed from PhotoKit to disk. SHA-256 is computed inline during the write — no second pass. iCloud-only assets are downloaded transparently when `networkAccessAllowed` is true (the default).
+
+### Standalone Hashing
+
+```swift
+// Streaming hasher for incremental use
+let hasher = StreamingHasher()
+hasher.update(chunk1)
+hasher.update(chunk2)
+let hash = hasher.finalize() // hex-encoded SHA-256
+
+// One-shot file hashing (8 MB chunks, memory-efficient)
+let fileHash = try FileHasher.sha256(fileAt: fileURL)
+```
+
+## API Contract
+
+### Provided (what LadderKit gives you)
+
+| Protocol / Type | Purpose |
+|---|---|
+| `PhotoLibrary` | Asset discovery and fetch by identifier |
+| `AssetHandle` | Single asset's exportable resource |
+| `PhotoExporter` | Concurrent export with inline hashing |
+| `PhotosDatabase` | Photos.sqlite enrichment reader |
+| `PhotosLibraryPath` | Library bundle validation and path derivation |
+| `StreamingHasher` | Incremental SHA-256 |
+| `FileHasher` | One-shot file SHA-256 |
+| `PathSafety` | Filename sanitization and path traversal prevention |
+
+### Required (what your app must provide)
+
+| Requirement | How |
+|---|---|
+| **Photos permission** | Call `PHPhotoLibrary.requestAuthorization(for: .readWrite)` before using `PhotoKitLibrary` |
+| **Photos library path** | User selects their `.photoslibrary` bundle. Use `PhotosLibraryPath.validate()` to verify, then `databasePath(for:)` to get the sqlite path. A security-scoped bookmark from `NSOpenPanel` grants file access without Full Disk Access. |
+| **Staging directory** | Provide an absolute path for exported files. Validate with `PathSafety.validateStagingDir()`. |
+
+### Data Types
+
+**AssetInfo** — metadata for a single photo or video:
+
+```
+identifier          String       PhotoKit local identifier (e.g., "UUID/L0/001")
+uuid                String       UUID portion extracted from identifier
+creationDate        Date?        when the photo was taken
+kind                AssetKind    .photo (0) or .video (1)
+pixelWidth          Int
+pixelHeight         Int
+latitude            Double?      GPS coordinates
+longitude           Double?
+isFavorite          Bool
+originalFilename    String?      from Photos.sqlite enrichment
+uniformTypeIdentifier String?    e.g., "public.heic"
+hasEdit             Bool         true when both adjustment + rendered resource exist
+albums              [AlbumInfo]  album membership
+keywords            [String]     user-assigned keywords
+people              [PersonInfo] recognized faces with names
+assetDescription    String?      user-written caption (JSON key: "description")
+editedAt            Date?        when the edit was made
+editor              String?      editor identifier (e.g., "com.apple.photos")
+```
+
+`AssetInfo` conforms to `Codable`. The `assetDescription` field serializes as `"description"` in JSON.
+
+**AlbumInfo** — `{ identifier: String, title: String }`
+
+**PersonInfo** — `{ uuid: String, displayName: String }`
+
+**ExportResult** — `{ uuid: String, path: String, size: Int64, sha256: String }`
+
+### Testability
+
+All external dependencies are behind protocols:
+
+- `PhotoLibrary` — inject a mock that returns pre-configured assets
+- `AssetHandle` — inject a mock that writes known data
+
+Tests run without Photos library access, Photos permission, or network. See `Tests/PhotoExporterTests.swift` for examples.
+
+## CLI
+
+The CLI wraps LadderKit for use as a subprocess (used by [attic](https://github.com/tijs/attic)).
+
+### Installing
 
 ```
 make install
 ```
 
-This builds a release binary and installs it to `/usr/local/bin/ladder`. To install elsewhere:
+Installs to `/usr/local/bin/ladder`. Use `make install PREFIX=~/.local` for a different location.
 
-```
-make install PREFIX=~/.local
-```
+### Usage
 
-To uninstall:
-
-```
-make uninstall
+```bash
+echo '{"uuids":["..."],"stagingDir":"/tmp/staging"}' | ladder
+# or
+ladder request.json
 ```
 
-## Usage
-
-### Input (ExportRequest)
-
+**Input** (`ExportRequest`):
 ```json
 {
-  "uuids": [
-    "B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001",
-    "3FA8GH5M-BMMH-H123-ABCD-1234567890AB/L0/001"
-  ],
+  "uuids": ["B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001"],
   "stagingDir": "/tmp/photo-export"
 }
 ```
 
-- `uuids` -- Photos library local identifiers to export
-- `stagingDir` -- absolute path where exported files will be written (must not be inside system directories like `/System`, `/Library`, `/usr`, etc.)
-
-### Running
-
-```bash
-# From stdin
-echo '{"uuids":["..."],"stagingDir":"/tmp/staging"}' | .build/release/ladder
-
-# From a file
-.build/release/ladder request.json
-```
-
-### Output (ExportResponse)
-
-Written to stdout:
-
+**Output** (`ExportResponse`):
 ```json
 {
-  "errors": [
-    {
-      "message": "Asset not found in Photos library",
-      "uuid": "missing-uuid"
-    }
-  ],
   "results": [
     {
+      "uuid": "B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001",
       "path": "/tmp/photo-export/B84E8479-475C-4727_IMG_0001.HEIC",
-      "sha256": "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447",
       "size": 3158112,
-      "uuid": "B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001"
+      "sha256": "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
     }
+  ],
+  "errors": [
+    { "uuid": "missing-uuid", "message": "Asset not found in Photos library" }
   ]
 }
 ```
 
-Each result includes the file path, size in bytes, and SHA-256 hash. Assets that could not be found or exported appear in the `errors` array.
+### Required permissions
 
-## Required permissions
+- **Photos access** — grant in System Settings > Privacy & Security > Photos
+- **Full Disk Access** — may be needed depending on library location
 
-- **Photos access** -- ladder requests read/write authorization on launch. Grant access in System Settings > Privacy & Security > Photos.
-- **Full Disk Access** -- may be required depending on how the Photos library is stored. Grant in System Settings > Privacy & Security > Full Disk Access.
+## Project structure
+
+```
+Sources/
+  CLI/
+    Main.swift              entry point, stdin/stdout JSON protocol
+  LadderKit/
+    AssetInfo.swift          AssetInfo, AssetKind, AlbumInfo, PersonInfo
+    PhotoLibrary.swift       PhotoLibrary protocol + PhotoKit implementation
+    PhotoExporter.swift      concurrent export with inline hashing
+    PhotosDatabase.swift     Photos.sqlite enrichment reader
+    PhotosLibraryPath.swift  library bundle validation
+    Hasher.swift             StreamingHasher + FileHasher
+    Models.swift             ExportRequest, ExportResponse (CLI types)
+    PathSafety.swift         filename sanitization, path traversal prevention
+Tests/
+    AssetInfoTests.swift
+    PhotoExporterTests.swift
+    PhotosDatabaseTests.swift
+    PhotosLibraryPathTests.swift
+    HasherTests.swift
+    ModelsTests.swift
+    PathSafetyTests.swift
+```
 
 ## Testing
 
@@ -102,27 +239,4 @@ Each result includes the file path, size in bytes, and SHA-256 hash. Assets that
 swift test
 ```
 
-Tests use protocol-based dependency injection (`PhotoLibrary` / `AssetHandle` protocols) with mock implementations, so they run without Photos library access.
-
-## Project structure
-
-```
-Sources/
-  CLI/
-    Main.swift           -- entry point, stdin parsing, authorization
-  LadderKit/
-    Models.swift         -- ExportRequest, ExportResponse, ExportResult, ExportError
-    PhotoExporter.swift  -- concurrent export orchestration
-    PhotoLibrary.swift   -- PhotoKit abstraction (protocol + real implementation)
-    Hasher.swift         -- streaming SHA-256 (inline with export)
-    PathSafety.swift     -- filename sanitization and path traversal prevention
-Tests/
-    ModelsTests.swift
-    PhotoExporterTests.swift
-    HasherTests.swift
-    PathSafetyTests.swift
-```
-
-## How it fits with attic
-
-In the photo-cloud system, **attic** (Deno/TypeScript) is the orchestrator that determines which photos need backing up and manages cloud storage. It spawns **ladder** as a subprocess to handle the macOS-specific part: accessing the Photos library via PhotoKit and exporting original files to a staging directory. attic sends a JSON request with the asset UUIDs, ladder exports them and reports back with file paths and hashes, and attic takes it from there.
+44 tests across 8 suites. All tests use mock implementations — no Photos library, credentials, or network required.
