@@ -9,10 +9,11 @@ public protocol PhotoLibrary: Sendable {
     /// Return the total number of non-trashed assets in the library.
     func totalAssetCount() -> Int
 
-    /// Enumerate all non-trashed assets with their metadata.
+    /// Enumerate all non-trashed assets with core metadata from PhotoKit.
     ///
     /// Returns assets sorted by creation date (newest first).
-    /// Each asset includes album membership and edit detection.
+    /// Enrichment fields (keywords, people, descriptions, albums, edits)
+    /// are populated separately via ``PhotosDatabase``.
     func enumerateAssets() -> [AssetInfo]
 }
 
@@ -61,8 +62,6 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
     }
 
     public func enumerateAssets() -> [AssetInfo] {
-        let albumMap = buildAlbumMap()
-
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
         options.includeAllBurstAssets = false
@@ -73,81 +72,22 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         assets.reserveCapacity(fetchResult.count)
 
         fetchResult.enumerateObjects { phAsset, _, _ in
-            let info = self.assetInfo(from: phAsset, albumMap: albumMap)
+            let kind: AssetKind = phAsset.mediaType == .video ? .video : .photo
+
+            let info = AssetInfo(
+                identifier: phAsset.localIdentifier,
+                creationDate: phAsset.creationDate,
+                kind: kind,
+                pixelWidth: phAsset.pixelWidth,
+                pixelHeight: phAsset.pixelHeight,
+                latitude: phAsset.location?.coordinate.latitude,
+                longitude: phAsset.location?.coordinate.longitude,
+                isFavorite: phAsset.isFavorite
+            )
             assets.append(info)
         }
 
         return assets
-    }
-
-    // MARK: - Private
-
-    private func assetInfo(
-        from phAsset: PHAsset,
-        albumMap: [String: [AlbumInfo]]
-    ) -> AssetInfo {
-        let resources = PHAssetResource.assetResources(for: phAsset)
-        let primaryResource = resources.first(where: { $0.type == .photo || $0.type == .video })
-            ?? resources.first
-
-        let hasEdit = resources.contains { $0.type == .adjustmentData }
-            && resources.contains {
-                $0.type == .fullSizePhoto || $0.type == .fullSizeVideo
-            }
-
-        let kind: AssetKind = phAsset.mediaType == .video ? .video : .photo
-
-        return AssetInfo(
-            identifier: phAsset.localIdentifier,
-            creationDate: phAsset.creationDate,
-            kind: kind,
-            pixelWidth: phAsset.pixelWidth,
-            pixelHeight: phAsset.pixelHeight,
-            latitude: phAsset.location?.coordinate.latitude,
-            longitude: phAsset.location?.coordinate.longitude,
-            isFavorite: phAsset.isFavorite,
-            originalFilename: primaryResource?.originalFilename,
-            uniformTypeIdentifier: primaryResource?.uniformTypeIdentifier,
-            hasEdit: hasEdit,
-            albums: albumMap[phAsset.localIdentifier] ?? []
-        )
-    }
-
-    /// Build a map of asset identifier → albums it belongs to.
-    ///
-    /// Fetches all user-created albums and smart albums, then for each album
-    /// fetches its assets and records the membership.
-    private func buildAlbumMap() -> [String: [AlbumInfo]] {
-        var map: [String: [AlbumInfo]] = [:]
-
-        let albumTypes: [(PHAssetCollectionType, PHAssetCollectionSubtype)] = [
-            (.album, .any),
-            (.smartAlbum, .any),
-        ]
-
-        for (type, subtype) in albumTypes {
-            let collections = PHAssetCollection.fetchAssetCollections(
-                with: type,
-                subtype: subtype,
-                options: nil
-            )
-
-            collections.enumerateObjects { collection, _, _ in
-                guard let title = collection.localizedTitle else { return }
-
-                let albumInfo = AlbumInfo(
-                    identifier: collection.localIdentifier,
-                    title: title
-                )
-
-                let assets = PHAsset.fetchAssets(in: collection, options: nil)
-                assets.enumerateObjects { asset, _, _ in
-                    map[asset.localIdentifier, default: []].append(albumInfo)
-                }
-            }
-        }
-
-        return map
     }
 }
 
@@ -165,7 +105,6 @@ struct PhotoKitAssetHandle: AssetHandle {
         let options = PHAssetResourceRequestOptions()
         options.isNetworkAccessAllowed = networkAccessAllowed
 
-        // Use requestData to stream chunks — enables inline hashing while writing
         let handle = try FileHandle(forWritingTo: destinationURL)
 
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -174,10 +113,14 @@ struct PhotoKitAssetHandle: AssetHandle {
                 options: options,
                 dataReceivedHandler: { data in
                     chunkHandler(data)
-                    handle.write(data)
+                    do {
+                        try handle.write(contentsOf: data)
+                    } catch {
+                        // Error will surface via the file size mismatch or next write
+                    }
                 },
                 completionHandler: { error in
-                    handle.closeFile()
+                    try? handle.close()
                     if let error {
                         continuation.resume(throwing: error)
                     } else {

@@ -2,14 +2,15 @@ import Foundation
 
 /// Lightweight metadata about a photo or video asset.
 ///
-/// Core fields (identifier, dates, dimensions, location, etc.) are populated
-/// from PhotoKit. Enrichment fields (keywords, people, description, editor)
-/// come from Photos.sqlite via ``PhotosDatabase`` since PhotoKit doesn't
-/// expose them.
-public struct AssetInfo: Sendable {
-    // MARK: - PhotoKit fields
+/// Core fields (identifier, dates, dimensions, location) are populated
+/// from PhotoKit during enumeration. All other fields (filename, albums,
+/// keywords, people, description, edits) come from Photos.sqlite via
+/// ``PhotosDatabase`` enrichment.
+public struct AssetInfo: Sendable, Codable {
+    // MARK: - PhotoKit fields (set during enumeration)
 
     public let identifier: String
+    public let uuid: String
     public let creationDate: Date?
     public let kind: AssetKind
     public let pixelWidth: Int
@@ -17,29 +18,26 @@ public struct AssetInfo: Sendable {
     public let latitude: Double?
     public let longitude: Double?
     public let isFavorite: Bool
-    public let originalFilename: String?
-    public let uniformTypeIdentifier: String?
-    public let hasEdit: Bool
-    public let albums: [AlbumInfo]
 
     // MARK: - Enrichment fields (from Photos.sqlite)
 
+    public var originalFilename: String?
+    public var uniformTypeIdentifier: String?
+    public var hasEdit: Bool
+    public var albums: [AlbumInfo]
     public var keywords: [String]
     public var people: [PersonInfo]
     public var assetDescription: String?
     public var editedAt: Date?
     public var editor: String?
 
-    /// The UUID portion of the PhotoKit local identifier.
-    ///
-    /// PhotoKit `localIdentifier` is formatted as `UUID/L0/001`.
-    /// Photos.sqlite `ZUUID` is just the UUID. This property extracts
-    /// the UUID prefix for joining between the two systems.
-    public var uuid: String {
-        if let slashIndex = identifier.firstIndex(of: "/") {
-            return String(identifier[identifier.startIndex..<slashIndex])
-        }
-        return identifier
+    enum CodingKeys: String, CodingKey {
+        case identifier, uuid, creationDate, kind
+        case pixelWidth, pixelHeight, latitude, longitude, isFavorite
+        case originalFilename, uniformTypeIdentifier, hasEdit
+        case albums, keywords, people
+        case assetDescription = "description"
+        case editedAt, editor
     }
 
     public init(
@@ -51,10 +49,10 @@ public struct AssetInfo: Sendable {
         latitude: Double?,
         longitude: Double?,
         isFavorite: Bool,
-        originalFilename: String?,
-        uniformTypeIdentifier: String?,
-        hasEdit: Bool,
-        albums: [AlbumInfo],
+        originalFilename: String? = nil,
+        uniformTypeIdentifier: String? = nil,
+        hasEdit: Bool = false,
+        albums: [AlbumInfo] = [],
         keywords: [String] = [],
         people: [PersonInfo] = [],
         assetDescription: String? = nil,
@@ -62,6 +60,12 @@ public struct AssetInfo: Sendable {
         editor: String? = nil
     ) {
         self.identifier = identifier
+        // Extract UUID from PhotoKit localIdentifier format "UUID/L0/001"
+        if let slashIndex = identifier.firstIndex(of: "/") {
+            self.uuid = String(identifier[identifier.startIndex..<slashIndex])
+        } else {
+            self.uuid = identifier
+        }
         self.creationDate = creationDate
         self.kind = kind
         self.pixelWidth = pixelWidth

@@ -6,9 +6,6 @@ import Foundation
 /// typically `~/Pictures/Photos Library.photoslibrary`. The internal
 /// database lives at `database/Photos.sqlite` within the bundle.
 public enum PhotosLibraryPath {
-    /// The path suffix from the library bundle root to Photos.sqlite.
-    static let databaseRelativePath = "database/Photos.sqlite"
-
     /// Derive the Photos.sqlite path from a library bundle URL.
     ///
     /// - Parameter libraryURL: URL to the `.photoslibrary` bundle

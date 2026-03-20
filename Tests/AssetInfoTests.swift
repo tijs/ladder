@@ -54,20 +54,7 @@ struct AssetInfoTests {
 
     @Test("creates video asset with default enrichment fields")
     func createVideoAssetMinimal() {
-        let info = AssetInfo(
-            identifier: "VID-456/L0/001",
-            creationDate: nil,
-            kind: .video,
-            pixelWidth: 1920,
-            pixelHeight: 1080,
-            latitude: nil,
-            longitude: nil,
-            isFavorite: false,
-            originalFilename: nil,
-            uniformTypeIdentifier: nil,
-            hasEdit: false,
-            albums: []
-        )
+        let info = makeAsset(identifier: "VID-456/L0/001", kind: .video)
 
         #expect(info.uuid == "VID-456")
         #expect(info.kind == .video)
@@ -76,30 +63,17 @@ struct AssetInfoTests {
         #expect(info.assetDescription == nil)
         #expect(info.editedAt == nil)
         #expect(info.editor == nil)
+        #expect(info.originalFilename == nil)
+        #expect(info.albums.isEmpty)
+        #expect(info.hasEdit == false)
     }
 
     @Test("uuid extraction from localIdentifier")
     func uuidExtraction() {
-        let withSuffix = AssetInfo(
-            identifier: "AAAA-BBBB-CCCC/L0/001",
-            creationDate: nil, kind: .photo,
-            pixelWidth: 1, pixelHeight: 1,
-            latitude: nil, longitude: nil,
-            isFavorite: false, originalFilename: nil,
-            uniformTypeIdentifier: nil, hasEdit: false,
-            albums: []
-        )
+        let withSuffix = makeAsset(identifier: "AAAA-BBBB-CCCC/L0/001")
         #expect(withSuffix.uuid == "AAAA-BBBB-CCCC")
 
-        let withoutSuffix = AssetInfo(
-            identifier: "PLAIN-UUID",
-            creationDate: nil, kind: .photo,
-            pixelWidth: 1, pixelHeight: 1,
-            latitude: nil, longitude: nil,
-            isFavorite: false, originalFilename: nil,
-            uniformTypeIdentifier: nil, hasEdit: false,
-            albums: []
-        )
+        let withoutSuffix = makeAsset(identifier: "PLAIN-UUID")
         #expect(withoutSuffix.uuid == "PLAIN-UUID")
     }
 
@@ -128,6 +102,45 @@ struct AssetInfoTests {
         #expect(a == b)
         #expect(a != c)
     }
+
+    @Test("Codable round-trip preserves all fields")
+    func codableRoundTrip() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let original = AssetInfo(
+            identifier: "TEST/L0/001",
+            creationDate: date,
+            kind: .photo,
+            pixelWidth: 100,
+            pixelHeight: 200,
+            latitude: 1.0,
+            longitude: 2.0,
+            isFavorite: true,
+            originalFilename: "test.jpg",
+            uniformTypeIdentifier: "public.jpeg",
+            hasEdit: true,
+            albums: [AlbumInfo(identifier: "a1", title: "Album")],
+            keywords: ["tag"],
+            people: [PersonInfo(uuid: "p1", displayName: "Name")],
+            assetDescription: "A test",
+            editedAt: date,
+            editor: "com.test"
+        )
+
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(original)
+        let decoded = try JSONDecoder().decode(AssetInfo.self, from: data)
+
+        #expect(decoded.identifier == original.identifier)
+        #expect(decoded.uuid == original.uuid)
+        #expect(decoded.kind == original.kind)
+        #expect(decoded.assetDescription == "A test")
+        #expect(decoded.keywords == ["tag"])
+
+        // Verify "description" is the JSON key, not "assetDescription"
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        #expect(json["description"] != nil)
+        #expect(json["assetDescription"] == nil)
+    }
 }
 
 @Suite("MockPhotoLibrary Discovery")
@@ -135,34 +148,8 @@ struct MockPhotoLibraryDiscoveryTests {
     @Test("enumerateAssets returns configured assets")
     func enumerateAssets() {
         let infos = [
-            AssetInfo(
-                identifier: "asset-1/L0/001",
-                creationDate: Date(),
-                kind: .photo,
-                pixelWidth: 100,
-                pixelHeight: 100,
-                latitude: nil,
-                longitude: nil,
-                isFavorite: false,
-                originalFilename: "photo.jpg",
-                uniformTypeIdentifier: "public.jpeg",
-                hasEdit: false,
-                albums: []
-            ),
-            AssetInfo(
-                identifier: "asset-2/L0/001",
-                creationDate: nil,
-                kind: .video,
-                pixelWidth: 1920,
-                pixelHeight: 1080,
-                latitude: nil,
-                longitude: nil,
-                isFavorite: true,
-                originalFilename: "video.mov",
-                uniformTypeIdentifier: "com.apple.quicktime-movie",
-                hasEdit: true,
-                albums: [AlbumInfo(identifier: "a1", title: "Favorites")]
-            ),
+            makeAsset(identifier: "asset-1/L0/001"),
+            makeAsset(identifier: "asset-2/L0/001", kind: .video, isFavorite: true),
         ]
 
         let library = MockPhotoLibrary(assets: [:], assetInfos: infos)
@@ -174,8 +161,6 @@ struct MockPhotoLibraryDiscoveryTests {
         #expect(enumerated[0].uuid == "asset-1")
         #expect(enumerated[1].uuid == "asset-2")
         #expect(enumerated[1].isFavorite == true)
-        #expect(enumerated[1].hasEdit == true)
-        #expect(enumerated[1].albums.count == 1)
     }
 
     @Test("totalAssetCount returns zero for empty library")
@@ -184,4 +169,23 @@ struct MockPhotoLibraryDiscoveryTests {
         #expect(library.totalAssetCount() == 0)
         #expect(library.enumerateAssets().isEmpty)
     }
+}
+
+// MARK: - Test Helpers
+
+func makeAsset(
+    identifier: String,
+    kind: AssetKind = .photo,
+    isFavorite: Bool = false
+) -> AssetInfo {
+    AssetInfo(
+        identifier: identifier,
+        creationDate: nil,
+        kind: kind,
+        pixelWidth: 100,
+        pixelHeight: 100,
+        latitude: nil,
+        longitude: nil,
+        isFavorite: isFavorite
+    )
 }

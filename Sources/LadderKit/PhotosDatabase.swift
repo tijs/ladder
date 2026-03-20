@@ -2,24 +2,33 @@ import Foundation
 import SQLite3
 
 /// Reads enrichment metadata from Photos.sqlite that PhotoKit doesn't expose:
-/// keywords, people/faces, descriptions, and edit details.
+/// filenames, albums, keywords, people/faces, descriptions, and edit details.
 ///
 /// Opens the database read-only and closes it after building the enrichment maps.
 /// Uses `safeQuery` for resilience across macOS versions where table schemas differ.
-public struct PhotosDatabase: Sendable {
+public enum PhotosDatabase {
     /// CoreData epoch (2001-01-01) offset from Unix epoch in seconds.
     static let coreDataEpochOffset: TimeInterval = 978_307_200
 
     /// All enrichment data, keyed by Photos.sqlite ZUUID.
     public struct EnrichmentData: Sendable {
+        public let filenames: [String: FileInfo]
+        public let albums: [String: [AlbumInfo]]
         public let keywords: [String: [String]]
         public let people: [String: [PersonInfo]]
         public let descriptions: [String: String]
         public let edits: [String: EditInfo]
 
         public static let empty = EnrichmentData(
-            keywords: [:], people: [:], descriptions: [:], edits: [:]
+            filenames: [:], albums: [:], keywords: [:],
+            people: [:], descriptions: [:], edits: [:]
         )
+    }
+
+    /// File information from Photos.sqlite.
+    public struct FileInfo: Sendable {
+        public let originalFilename: String?
+        public let uniformTypeIdentifier: String?
     }
 
     /// Edit information from Photos.sqlite.
@@ -27,8 +36,6 @@ public struct PhotosDatabase: Sendable {
         public let editedAt: Date?
         public let editor: String
     }
-
-    private init() {}
 
     /// Read all enrichment data from Photos.sqlite.
     ///
@@ -46,6 +53,8 @@ public struct PhotosDatabase: Sendable {
         let uuidMap = buildUUIDMap(db: db)
 
         return EnrichmentData(
+            filenames: buildFilenameMap(db: db, uuidMap: uuidMap),
+            albums: buildAlbumMap(db: db, uuidMap: uuidMap),
             keywords: buildKeywordMap(db: db, uuidMap: uuidMap),
             people: buildPeopleMap(db: db, uuidMap: uuidMap),
             descriptions: buildDescriptionMap(db: db, uuidMap: uuidMap),
@@ -63,6 +72,13 @@ public struct PhotosDatabase: Sendable {
     ) {
         for i in assets.indices {
             let uuid = assets[i].uuid
+            if let file = data.filenames[uuid] {
+                assets[i].originalFilename = file.originalFilename
+                assets[i].uniformTypeIdentifier = file.uniformTypeIdentifier
+            }
+            if let albs = data.albums[uuid] {
+                assets[i].albums = albs
+            }
             if let kw = data.keywords[uuid] {
                 assets[i].keywords = kw
             }
@@ -73,6 +89,7 @@ public struct PhotosDatabase: Sendable {
                 assets[i].assetDescription = desc
             }
             if let edit = data.edits[uuid] {
+                assets[i].hasEdit = true
                 assets[i].editedAt = edit.editedAt
                 assets[i].editor = edit.editor
             }
@@ -98,17 +115,17 @@ extension PhotosDatabase {
     private static func safeQuery(
         db: OpaquePointer,
         sql: String,
-        label: String,
         handler: (OpaquePointer) -> Void
     ) {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
             return
         }
+        guard let stmt else { return }
         defer { sqlite3_finalize(stmt) }
 
         while sqlite3_step(stmt) == SQLITE_ROW {
-            handler(stmt!)
+            handler(stmt)
         }
     }
 
@@ -130,15 +147,11 @@ extension PhotosDatabase {
 // MARK: - UUID Map (Z_PK → ZUUID)
 
 extension PhotosDatabase {
-    /// Build a map from Z_PK (integer primary key) to ZUUID (string).
-    /// Enrichment queries return Z_PK references; we need ZUUID for matching
-    /// against PhotoKit's localIdentifier.
     private static func buildUUIDMap(db: OpaquePointer) -> [Int: String] {
         var map: [Int: String] = [:]
         safeQuery(
             db: db,
-            sql: "SELECT Z_PK, ZUUID FROM ZASSET WHERE ZTRASHEDSTATE = 0",
-            label: "uuid map"
+            sql: "SELECT Z_PK, ZUUID FROM ZASSET WHERE ZTRASHEDSTATE = 0"
         ) { stmt in
             let pk = intColumn(stmt, 0)
             if let uuid = stringColumn(stmt, 1) {
@@ -152,6 +165,56 @@ extension PhotosDatabase {
 // MARK: - Enrichment Queries
 
 extension PhotosDatabase {
+    private static func buildFilenameMap(
+        db: OpaquePointer,
+        uuidMap: [Int: String]
+    ) -> [String: FileInfo] {
+        var map: [String: FileInfo] = [:]
+        safeQuery(
+            db: db,
+            sql: """
+                SELECT a.Z_PK, aa.ZORIGINALFILENAME, a.ZUNIFORMTYPEIDENTIFIER
+                FROM ZASSET a
+                JOIN ZADDITIONALASSETATTRIBUTES aa ON aa.ZASSET = a.Z_PK
+                WHERE a.ZTRASHEDSTATE = 0
+                """
+        ) { stmt in
+            let pk = intColumn(stmt, 0)
+            guard let uuid = uuidMap[pk] else { return }
+            map[uuid] = FileInfo(
+                originalFilename: stringColumn(stmt, 1),
+                uniformTypeIdentifier: stringColumn(stmt, 2)
+            )
+        }
+        return map
+    }
+
+    private static func buildAlbumMap(
+        db: OpaquePointer,
+        uuidMap: [Int: String]
+    ) -> [String: [AlbumInfo]] {
+        var map: [String: [AlbumInfo]] = [:]
+        safeQuery(
+            db: db,
+            sql: """
+                SELECT ja.Z_3ASSETS, g.ZUUID, g.ZTITLE
+                FROM Z_33ASSETS ja
+                JOIN ZGENERICALBUM g ON ja.Z_33ALBUMS = g.Z_PK
+                WHERE g.ZTITLE IS NOT NULL
+                """
+        ) { stmt in
+            let assetPK = intColumn(stmt, 0)
+            guard let uuid = uuidMap[assetPK],
+                  let albumUUID = stringColumn(stmt, 1),
+                  let title = stringColumn(stmt, 2)
+            else { return }
+            map[uuid, default: []].append(
+                AlbumInfo(identifier: albumUUID, title: title)
+            )
+        }
+        return map
+    }
+
     private static func buildDescriptionMap(
         db: OpaquePointer,
         uuidMap: [Int: String]
@@ -164,8 +227,7 @@ extension PhotosDatabase {
                 FROM ZASSETDESCRIPTION d
                 JOIN ZADDITIONALASSETATTRIBUTES aa ON d.ZASSETATTRIBUTES = aa.Z_PK
                 WHERE d.ZLONGDESCRIPTION IS NOT NULL AND d.ZLONGDESCRIPTION != ''
-                """,
-            label: "descriptions"
+                """
         ) { stmt in
             let pk = intColumn(stmt, 0)
             if let uuid = uuidMap[pk], let desc = stringColumn(stmt, 1) {
@@ -188,8 +250,7 @@ extension PhotosDatabase {
                 JOIN ZKEYWORD k ON jk.Z_52KEYWORDS = k.Z_PK
                 JOIN ZADDITIONALASSETATTRIBUTES aa ON jk.Z_1ASSETATTRIBUTES = aa.Z_PK
                 WHERE k.ZTITLE IS NOT NULL
-                """,
-            label: "keywords"
+                """
         ) { stmt in
             let pk = intColumn(stmt, 0)
             if let uuid = uuidMap[pk], let title = stringColumn(stmt, 1) {
@@ -213,8 +274,7 @@ extension PhotosDatabase {
                 JOIN ZPERSON p ON df.ZPERSONFORFACE = p.Z_PK
                 WHERE p.ZDISPLAYNAME IS NOT NULL AND p.ZDISPLAYNAME != ''
                   AND df.ZHIDDEN = 0 AND df.ZASSETVISIBLE = 1
-                """,
-            label: "people"
+                """
         ) { stmt in
             let assetPK = intColumn(stmt, 0)
             guard let uuid = uuidMap[assetPK],
@@ -236,7 +296,7 @@ extension PhotosDatabase {
         db: OpaquePointer,
         uuidMap: [Int: String]
     ) -> [String: EditInfo] {
-        // First, build the set of assets that have rendered resources
+        // Build the set of assets that have rendered resources
         var renderedAssets: Set<Int> = []
         safeQuery(
             db: db,
@@ -246,13 +306,12 @@ extension PhotosDatabase {
                 WHERE ir.ZRESOURCETYPE = 1
                   AND ir.ZTRASHEDSTATE = 0
                   AND ir.ZVERSION != 0
-                """,
-            label: "rendered resources"
+                """
         ) { stmt in
             renderedAssets.insert(intColumn(stmt, 0))
         }
 
-        // Then build edit map, requiring both adjustment AND rendered resource
+        // Build edit map, requiring both adjustment AND rendered resource
         var map: [String: EditInfo] = [:]
         safeQuery(
             db: db,
@@ -262,8 +321,7 @@ extension PhotosDatabase {
                 JOIN ZUNMANAGEDADJUSTMENT ua ON aa.ZUNMANAGEDADJUSTMENT = ua.Z_PK
                 WHERE aa.ZUNMANAGEDADJUSTMENT IS NOT NULL
                   AND ua.ZADJUSTMENTFORMATIDENTIFIER IS NOT NULL
-                """,
-            label: "edits"
+                """
         ) { stmt in
             let pk = intColumn(stmt, 0)
             guard renderedAssets.contains(pk),

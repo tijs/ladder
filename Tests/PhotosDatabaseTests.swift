@@ -6,10 +6,51 @@ import Testing
 
 @Suite("PhotosDatabase")
 struct PhotosDatabaseTests {
+    @Test("enrich applies filenames to matching assets")
+    func enrichFilenames() {
+        var assets = [makeAsset(identifier: "ABC-123/L0/001")]
+        let data = PhotosDatabase.EnrichmentData(
+            filenames: ["ABC-123": .init(
+                originalFilename: "IMG_0001.HEIC",
+                uniformTypeIdentifier: "public.heic"
+            )],
+            albums: [:],
+            keywords: [:],
+            people: [:],
+            descriptions: [:],
+            edits: [:]
+        )
+
+        PhotosDatabase.enrich(&assets, with: data)
+
+        #expect(assets[0].originalFilename == "IMG_0001.HEIC")
+        #expect(assets[0].uniformTypeIdentifier == "public.heic")
+    }
+
+    @Test("enrich applies albums to matching assets")
+    func enrichAlbums() {
+        var assets = [makeAsset(identifier: "ABC-123/L0/001")]
+        let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: ["ABC-123": [AlbumInfo(identifier: "a1", title: "Vacation")]],
+            keywords: [:],
+            people: [:],
+            descriptions: [:],
+            edits: [:]
+        )
+
+        PhotosDatabase.enrich(&assets, with: data)
+
+        #expect(assets[0].albums.count == 1)
+        #expect(assets[0].albums[0].title == "Vacation")
+    }
+
     @Test("enrich applies keywords to matching assets")
     func enrichKeywords() {
         var assets = [makeAsset(identifier: "ABC-123/L0/001")]
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: ["ABC-123": ["sunset", "beach"]],
             people: [:],
             descriptions: [:],
@@ -26,6 +67,8 @@ struct PhotosDatabaseTests {
         var assets = [makeAsset(identifier: "DEF-456/L0/001")]
         let person = PersonInfo(uuid: "person-1", displayName: "Alice")
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: [:],
             people: ["DEF-456": [person]],
             descriptions: [:],
@@ -42,6 +85,8 @@ struct PhotosDatabaseTests {
     func enrichDescriptions() {
         var assets = [makeAsset(identifier: "GHI-789/L0/001")]
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: [:],
             people: [:],
             descriptions: ["GHI-789": "A beautiful sunset"],
@@ -53,11 +98,15 @@ struct PhotosDatabaseTests {
         #expect(assets[0].assetDescription == "A beautiful sunset")
     }
 
-    @Test("enrich applies edit info to matching assets")
+    @Test("enrich applies edit info and sets hasEdit flag")
     func enrichEdits() {
         var assets = [makeAsset(identifier: "JKL-012/L0/001")]
+        #expect(assets[0].hasEdit == false)
+
         let editDate = Date(timeIntervalSince1970: 1_700_000_000)
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: [:],
             people: [:],
             descriptions: [:],
@@ -66,6 +115,7 @@ struct PhotosDatabaseTests {
 
         PhotosDatabase.enrich(&assets, with: data)
 
+        #expect(assets[0].hasEdit == true)
         #expect(assets[0].editedAt == editDate)
         #expect(assets[0].editor == "com.apple.photos")
     }
@@ -74,6 +124,8 @@ struct PhotosDatabaseTests {
     func enrichNoMatch() {
         var assets = [makeAsset(identifier: "NOMATCH/L0/001")]
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: ["OTHER": ["tag"]],
             people: [:],
             descriptions: [:],
@@ -86,6 +138,8 @@ struct PhotosDatabaseTests {
         #expect(assets[0].people.isEmpty)
         #expect(assets[0].assetDescription == nil)
         #expect(assets[0].editor == nil)
+        #expect(assets[0].originalFilename == nil)
+        #expect(assets[0].albums.isEmpty)
     }
 
     @Test("enrich handles multiple assets")
@@ -96,6 +150,8 @@ struct PhotosDatabaseTests {
             makeAsset(identifier: "C/L0/001"),
         ]
         let data = PhotosDatabase.EnrichmentData(
+            filenames: [:],
+            albums: [:],
             keywords: ["A": ["nature"], "C": ["urban"]],
             people: [:],
             descriptions: ["B": "Photo B"],
@@ -116,6 +172,8 @@ struct PhotosDatabaseTests {
         #expect(data.people.isEmpty)
         #expect(data.descriptions.isEmpty)
         #expect(data.edits.isEmpty)
+        #expect(data.filenames.isEmpty)
+        #expect(data.albums.isEmpty)
     }
 
     @Test("readEnrichment handles empty database")
@@ -127,33 +185,14 @@ struct PhotosDatabaseTests {
 
         let dbPath = tempDir.appendingPathComponent("Photos.sqlite").path
 
-        // Create an empty SQLite database
         var db: OpaquePointer?
         sqlite3_open(dbPath, &db)
         sqlite3_close(db)
 
-        // Should return empty (tables don't exist) without crashing
         let data = PhotosDatabase.readEnrichment(dbPath: dbPath)
         #expect(data.keywords.isEmpty)
         #expect(data.people.isEmpty)
-    }
-
-    // MARK: - Helpers
-
-    private func makeAsset(identifier: String) -> AssetInfo {
-        AssetInfo(
-            identifier: identifier,
-            creationDate: nil,
-            kind: .photo,
-            pixelWidth: 100,
-            pixelHeight: 100,
-            latitude: nil,
-            longitude: nil,
-            isFavorite: false,
-            originalFilename: "test.jpg",
-            uniformTypeIdentifier: "public.jpeg",
-            hasEdit: false,
-            albums: []
-        )
+        #expect(data.filenames.isEmpty)
+        #expect(data.albums.isEmpty)
     }
 }
