@@ -7,12 +7,6 @@ import SQLite3
 /// Opens the database read-only and closes it after building the enrichment maps.
 /// Uses `safeQuery` for resilience across macOS versions where table schemas differ.
 public struct PhotosDatabase: Sendable {
-    /// Default path to the Photos library database.
-    public static let defaultPath: String = {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/Pictures/Photos Library.photoslibrary/database/Photos.sqlite"
-    }()
-
     /// CoreData epoch (2001-01-01) offset from Unix epoch in seconds.
     static let coreDataEpochOffset: TimeInterval = 978_307_200
 
@@ -38,10 +32,11 @@ public struct PhotosDatabase: Sendable {
 
     /// Read all enrichment data from Photos.sqlite.
     ///
-    /// Opens the database read-only, runs enrichment queries, and closes it.
+    /// Use ``PhotosLibraryPath/databasePath(for:)`` to derive the `dbPath`
+    /// from a library bundle URL selected by the user.
     /// Returns `.empty` if the database cannot be opened.
     public static func readEnrichment(
-        dbPath: String = defaultPath
+        dbPath: String
     ) -> EnrichmentData {
         guard let db = openDatabase(path: dbPath) else {
             return .empty
