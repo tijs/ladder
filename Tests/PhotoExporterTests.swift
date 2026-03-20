@@ -7,6 +7,7 @@ import Testing
 /// Mock photo library for testing export logic without PhotoKit.
 struct MockPhotoLibrary: PhotoLibrary {
     let assets: [String: AssetHandle]
+    var assetInfos: [AssetInfo] = []
 
     func fetchAssets(identifiers: [String]) -> [String: AssetHandle] {
         var result: [String: AssetHandle] = [:]
@@ -16,6 +17,14 @@ struct MockPhotoLibrary: PhotoLibrary {
             }
         }
         return result
+    }
+
+    func totalAssetCount() -> Int {
+        assetInfos.count
+    }
+
+    func enumerateAssets() -> [AssetInfo] {
+        assetInfos
     }
 }
 

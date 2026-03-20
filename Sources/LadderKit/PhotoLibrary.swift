@@ -3,8 +3,17 @@ import Foundation
 
 /// Abstraction over PhotoKit for testability.
 public protocol PhotoLibrary: Sendable {
-    /// Fetch assets by their local identifiers.
+    /// Fetch assets by their local identifiers (for export).
     func fetchAssets(identifiers: [String]) -> [String: AssetHandle]
+
+    /// Return the total number of non-trashed assets in the library.
+    func totalAssetCount() -> Int
+
+    /// Enumerate all non-trashed assets with their metadata.
+    ///
+    /// Returns assets sorted by creation date (newest first).
+    /// Each asset includes album membership and edit detection.
+    func enumerateAssets() -> [AssetInfo]
 }
 
 /// Abstraction over a single asset's exportable resource.
@@ -23,7 +32,7 @@ public protocol AssetHandle: Sendable {
 }
 
 /// Real PhotoKit implementation.
-public struct PhotoKitLibrary: PhotoLibrary {
+public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
     public init() {}
 
     public func fetchAssets(identifiers: [String]) -> [String: AssetHandle] {
@@ -41,6 +50,104 @@ public struct PhotoKitLibrary: PhotoLibrary {
             result[asset.localIdentifier] = PhotoKitAssetHandle(resource: resource)
         }
         return result
+    }
+
+    public func totalAssetCount() -> Int {
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.includeAllBurstAssets = false
+        let result = PHAsset.fetchAssets(with: options)
+        return result.count
+    }
+
+    public func enumerateAssets() -> [AssetInfo] {
+        let albumMap = buildAlbumMap()
+
+        let options = PHFetchOptions()
+        options.includeHiddenAssets = false
+        options.includeAllBurstAssets = false
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+
+        let fetchResult = PHAsset.fetchAssets(with: options)
+        var assets: [AssetInfo] = []
+        assets.reserveCapacity(fetchResult.count)
+
+        fetchResult.enumerateObjects { phAsset, _, _ in
+            let info = self.assetInfo(from: phAsset, albumMap: albumMap)
+            assets.append(info)
+        }
+
+        return assets
+    }
+
+    // MARK: - Private
+
+    private func assetInfo(
+        from phAsset: PHAsset,
+        albumMap: [String: [AlbumInfo]]
+    ) -> AssetInfo {
+        let resources = PHAssetResource.assetResources(for: phAsset)
+        let primaryResource = resources.first(where: { $0.type == .photo || $0.type == .video })
+            ?? resources.first
+
+        let hasEdit = resources.contains { $0.type == .adjustmentData }
+            && resources.contains {
+                $0.type == .fullSizePhoto || $0.type == .fullSizeVideo
+            }
+
+        let kind: AssetKind = phAsset.mediaType == .video ? .video : .photo
+
+        return AssetInfo(
+            identifier: phAsset.localIdentifier,
+            creationDate: phAsset.creationDate,
+            kind: kind,
+            pixelWidth: phAsset.pixelWidth,
+            pixelHeight: phAsset.pixelHeight,
+            latitude: phAsset.location?.coordinate.latitude,
+            longitude: phAsset.location?.coordinate.longitude,
+            isFavorite: phAsset.isFavorite,
+            originalFilename: primaryResource?.originalFilename,
+            uniformTypeIdentifier: primaryResource?.uniformTypeIdentifier,
+            hasEdit: hasEdit,
+            albums: albumMap[phAsset.localIdentifier] ?? []
+        )
+    }
+
+    /// Build a map of asset identifier → albums it belongs to.
+    ///
+    /// Fetches all user-created albums and smart albums, then for each album
+    /// fetches its assets and records the membership.
+    private func buildAlbumMap() -> [String: [AlbumInfo]] {
+        var map: [String: [AlbumInfo]] = [:]
+
+        let albumTypes: [(PHAssetCollectionType, PHAssetCollectionSubtype)] = [
+            (.album, .any),
+            (.smartAlbum, .any),
+        ]
+
+        for (type, subtype) in albumTypes {
+            let collections = PHAssetCollection.fetchAssetCollections(
+                with: type,
+                subtype: subtype,
+                options: nil
+            )
+
+            collections.enumerateObjects { collection, _, _ in
+                guard let title = collection.localizedTitle else { return }
+
+                let albumInfo = AlbumInfo(
+                    identifier: collection.localIdentifier,
+                    title: title
+                )
+
+                let assets = PHAsset.fetchAssets(in: collection, options: nil)
+                assets.enumerateObjects { asset, _, _ in
+                    map[asset.localIdentifier, default: []].append(albumInfo)
+                }
+            }
+        }
+
+        return map
     }
 }
 
