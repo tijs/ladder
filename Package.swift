@@ -4,6 +4,9 @@ import PackageDescription
 let package = Package(
     name: "ladder",
     platforms: [.macOS(.v13)],
+    products: [
+        .library(name: "LadderKit", targets: ["LadderKit"]),
+    ],
     targets: [
         .target(
             name: "LadderKit",
