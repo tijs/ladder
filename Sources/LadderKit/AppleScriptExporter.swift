@@ -110,6 +110,7 @@ public struct AppleScriptRunner: ScriptExporter {
 private final class ProcessHandle: @unchecked Sendable {
     let process = Process()
     let stderrPipe = Pipe()
+    var timeoutWork: DispatchWorkItem?
 
     func configure(script: String) {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -135,14 +136,19 @@ private func runOsascript(script: String, timeout: TimeInterval) async throws ->
     handle.configure(script: script)
 
     return try await withCheckedThrowingContinuation { continuation in
-        // Timeout: terminate process after deadline
-        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
+        // Timeout: terminate process after deadline (cancellable to allow clean exit).
+        // Stored on handle (@unchecked Sendable) so it can be cancelled from
+        // terminationHandler without capturing a non-Sendable local.
+        handle.timeoutWork = DispatchWorkItem {
             if handle.process.isRunning {
                 handle.process.terminate()
             }
         }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: handle.timeoutWork!)
 
         handle.process.terminationHandler = { proc in
+            handle.timeoutWork?.cancel()
+            handle.timeoutWork = nil
             let stderr = handle.readStderr()
             // Detect our timeout by checking for uncaught signal (SIGTERM = 15)
             let timedOut = proc.terminationReason == .uncaughtSignal
@@ -156,6 +162,8 @@ private func runOsascript(script: String, timeout: TimeInterval) async throws ->
         do {
             try handle.process.run()
         } catch {
+            handle.timeoutWork?.cancel()
+            handle.timeoutWork = nil
             continuation.resume(throwing: error)
         }
     }
