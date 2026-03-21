@@ -39,6 +39,8 @@ struct Ladder {
         // Pre-flight: verify Automation permission before starting exports
         do {
             try await exporter.checkPermissions()
+        } catch let error as AppleScriptError {
+            fatalExit(error.localizedDescription, code: permissionExitCode)
         } catch {
             fatalExit(error.localizedDescription)
         }
@@ -74,8 +76,12 @@ struct Ladder {
         return try JSONDecoder().decode(ExportRequest.self, from: data)
     }
 
-    private static func fatalExit(_ message: String) -> Never {
+    /// Exit code 77 signals a permission error to the calling process,
+    /// so it can abort early without string-matching stderr.
+    private static let permissionExitCode: Int32 = 77
+
+    private static func fatalExit(_ message: String, code: Int32 = 1) -> Never {
         FileHandle.standardError.write(Data("ladder: \(message)\n".utf8))
-        exit(1)
+        exit(code)
     }
 }

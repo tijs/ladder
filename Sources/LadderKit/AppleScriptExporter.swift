@@ -171,7 +171,7 @@ private func runOsascript(script: String, timeout: TimeInterval) async throws ->
 
 // MARK: - Helpers
 
-func buildExportScript(uuid: String, destination: String) -> String {
+private func buildExportScript(uuid: String, destination: String) -> String {
     let safeUUID = escapeForAppleScript(uuid)
     let safeDest = escapeForAppleScript(destination)
     // AppleScript export command — Photos.app handles iCloud download transparently

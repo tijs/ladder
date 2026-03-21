@@ -65,19 +65,6 @@ struct AppleScriptExporterTests {
             == "8A3B1C2D-4E5F-6789-ABCD-EF0123456789")
     }
 
-    // MARK: - buildExportScript
-
-    @Test("builds correct AppleScript")
-    func exportScript() {
-        let script = buildExportScript(
-            uuid: "ABC-123",
-            destination: "/tmp/staging/as_ABC-123"
-        )
-        #expect(script.contains("media item id \"ABC-123\""))
-        #expect(script.contains("POSIX file \"/tmp/staging/as_ABC-123\""))
-        #expect(script.contains("with using originals"))
-    }
-
     // MARK: - PhotoExporter with script fallback
 
     @Test("falls back to AppleScript for missing UUIDs")
@@ -277,24 +264,24 @@ struct AppleScriptExporterTests {
 
     // MARK: - AppleScript escaping
 
-    @Test("buildExportScript escapes quotes in UUID")
-    func scriptEscapesQuotes() {
-        let script = buildExportScript(
-            uuid: #"ABC" & evil & ""#,
-            destination: "/tmp/safe"
-        )
-        // The quote should be escaped, not terminating the string
-        #expect(script.contains(#"ABC\" & evil & \""#))
-        #expect(!script.contains(#"id "ABC" & evil"#))
+    @Test("escapeForAppleScript escapes double quotes")
+    func escapesQuotes() {
+        let result = escapeForAppleScript(#"ABC" & evil & ""#)
+        #expect(result == #"ABC\" & evil & \""#)
     }
 
-    @Test("buildExportScript escapes backslashes in destination")
-    func scriptEscapesBackslashes() {
-        let script = buildExportScript(
-            uuid: "ABC-123",
-            destination: #"/tmp/path\with\backslashes"#
-        )
-        #expect(script.contains(#"path\\with\\backslashes"#))
+    @Test("escapeForAppleScript escapes backslashes")
+    func escapesBackslashes() {
+        let result = escapeForAppleScript(#"/tmp/path\with\backslashes"#)
+        #expect(result == #"/tmp/path\\with\\backslashes"#)
+    }
+
+    @Test("escapeForAppleScript handles combined quotes and backslashes")
+    func escapesCombined() {
+        // Input: a\"b (backslash then quote)
+        // Expected: a\\\"b (backslash escaped, then quote escaped)
+        let result = escapeForAppleScript(#"a\"b"#)
+        #expect(result == #"a\\\"b"#)
     }
 
     // MARK: - UUID validation
