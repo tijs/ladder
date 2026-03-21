@@ -57,6 +57,7 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
         options.includeAllBurstAssets = false
+        options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared]
         let result = PHAsset.fetchAssets(with: options)
         return result.count
     }
@@ -65,6 +66,7 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
         let options = PHFetchOptions()
         options.includeHiddenAssets = false
         options.includeAllBurstAssets = false
+        options.includeAssetSourceTypes = [.typeUserLibrary, .typeCloudShared]
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
 
         let fetchResult = PHAsset.fetchAssets(with: options)
