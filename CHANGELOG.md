@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.3.4
+
+- Include iCloud Shared Photo Library assets in `enumerateAssets()` and
+  `totalAssetCount()` by adding `.typeCloudShared` to PhotoKit fetch options
+
+## 0.3.3
+
+- Harden AppleScript export: make `buildExportScript` private, detect
+  permission errors via exit code 77
+
+## 0.3.2
+
+- Fix process hang: cancel timeout timer when osascript exits normally
+
+## 0.3.1
+
+- Retry PhotoKit export failures via AppleScript fallback within the same
+  batch instead of only using AppleScript for initially-missing assets
+
+## 0.3.0
+
+- AppleScript fallback for iCloud-only assets that PhotoKit cannot export
+  directly (Optimize Storage enabled, asset not downloaded)
+- Photos.app handles the iCloud download transparently via `export` command
+- Configurable timeout per asset (default 600s)
+
 ## 0.2.0
 
 LadderKit is now a library product that can be consumed by other Swift packages.
