@@ -34,6 +34,20 @@ struct MockScriptExporter: ScriptExporter {
     }
 }
 
+/// Mock asset handle that always fails (simulates iCloud download failure).
+struct FailingAssetHandle: AssetHandle {
+    let originalFilename: String
+    let resourceType: PHAssetResourceType = .photo
+
+    func writeData(
+        to destinationURL: URL,
+        networkAccessAllowed: Bool,
+        chunkHandler: @escaping @Sendable (Data) -> Void
+    ) async throws -> Int64 {
+        throw NSError(domain: "PHPhotosErrorDomain", code: 3169)
+    }
+}
+
 @Suite("AppleScript Exporter")
 struct AppleScriptExporterTests {
 
@@ -207,6 +221,38 @@ struct AppleScriptExporterTests {
 
         #expect(response.results.count == 1)
         #expect(response.results[0].uuid == "ABC-123/L0/001")
+    }
+
+    @Test("PhotoKit export failure falls back to AppleScript")
+    func photoKitFailureFallsBackToAppleScript() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ladder-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let appleScriptData = Data("recovered via applescript".utf8)
+
+        // PhotoKit finds the asset but writeData throws (simulates iCloud download failure)
+        let library = MockPhotoLibrary(assets: [
+            "fail-uuid": FailingAssetHandle(originalFilename: "IMG_FAIL.HEIC"),
+        ])
+
+        let scriptExporter = MockScriptExporter(assets: [
+            "fail-uuid": ("IMG_FAIL.HEIC", appleScriptData),
+        ])
+
+        let exporter = PhotoExporter(
+            stagingDir: tempDir,
+            library: library,
+            scriptExporter: scriptExporter
+        )
+
+        let response = await exporter.export(uuids: ["fail-uuid"])
+
+        // Should succeed via AppleScript fallback, not fail
+        #expect(response.results.count == 1)
+        #expect(response.errors.isEmpty)
+        #expect(response.results[0].uuid == "fail-uuid")
     }
 
     // MARK: - Error types

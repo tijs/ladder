@@ -58,18 +58,22 @@ public final class PhotoExporter: Sendable {
 
         var allResults: [ExportResult] = []
         var allErrors: [ExportError] = []
+        var photoKitFailedUUIDs: [String] = []
         for result in exportResults {
             switch result {
             case .success(let exportResult):
                 allResults.append(exportResult)
             case .failure(let pair):
-                allErrors.append(ExportError(uuid: pair.uuid, message: pair.message))
+                photoKitFailedUUIDs.append(pair.uuid)
             }
         }
 
-        // AppleScript fallback for missing UUIDs (iCloud-only assets)
-        if !missingUUIDs.isEmpty {
-            let (fallbackResults, fallbackErrors) = await exportViaAppleScript(uuids: missingUUIDs)
+        // AppleScript fallback for:
+        // 1. UUIDs that PhotoKit couldn't find at all (iCloud-only, invisible to fetchAssets)
+        // 2. UUIDs that PhotoKit found but failed to export (e.g. iCloud download errors)
+        let fallbackUUIDs = missingUUIDs + photoKitFailedUUIDs
+        if !fallbackUUIDs.isEmpty {
+            let (fallbackResults, fallbackErrors) = await exportViaAppleScript(uuids: fallbackUUIDs)
             allResults.append(contentsOf: fallbackResults)
             allErrors.append(contentsOf: fallbackErrors)
         }
@@ -155,16 +159,21 @@ public final class PhotoExporter: Sendable {
         uuid: String,
         handle: AssetHandle
     ) async -> Result<ExportResult, ExportErrorPair> {
+        let destURL: URL
         do {
-            let destURL = try PathSafety.safeDestination(
+            destURL = try PathSafety.safeDestination(
                 stagingDir: stagingDir,
                 uuid: uuid,
                 originalFilename: handle.originalFilename
             )
+        } catch {
+            return .failure(ExportErrorPair(uuid: uuid, message: error.localizedDescription))
+        }
 
-            // Create empty file for writing
-            FileManager.default.createFile(atPath: destURL.path, contents: nil)
+        // Create empty file for writing
+        FileManager.default.createFile(atPath: destURL.path, contents: nil)
 
+        do {
             // Stream data: write to file + hash simultaneously
             let hasher = StreamingHasher()
             let size = try await handle.writeData(
@@ -181,6 +190,8 @@ public final class PhotoExporter: Sendable {
                 sha256: sha256
             ))
         } catch {
+            // Clean up the empty/partial file so AppleScript fallback can reuse the path
+            try? FileManager.default.removeItem(at: destURL)
             return .failure(ExportErrorPair(uuid: uuid, message: error.localizedDescription))
         }
     }
