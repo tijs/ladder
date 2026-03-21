@@ -3,27 +3,34 @@ import Foundation
 public final class PhotoExporter: Sendable {
     private let stagingDir: URL
     private let library: PhotoLibrary
+    private let scriptExporter: ScriptExporter?
     private let maxConcurrency: Int
 
     public init(
         stagingDir: URL,
         library: PhotoLibrary = PhotoKitLibrary(),
+        scriptExporter: ScriptExporter? = nil,
         maxConcurrency: Int = 6
     ) {
         self.stagingDir = stagingDir
         self.library = library
+        self.scriptExporter = scriptExporter
         self.maxConcurrency = maxConcurrency
+    }
+
+    /// Pre-flight check: verify Automation permission if a script exporter is configured.
+    /// Call before `export()` to fail fast with a clear error instead of mid-backup.
+    public func checkPermissions() async throws {
+        try await scriptExporter?.checkPermissions()
     }
 
     public func export(uuids: [String]) async -> ExportResponse {
         let assets = library.fetchAssets(identifiers: uuids)
 
-        // Report missing UUIDs
-        let errors: [ExportError] = uuids
-            .filter { assets[$0] == nil }
-            .map { ExportError(uuid: $0, message: "Asset not found in Photos library") }
+        // Identify missing UUIDs (PhotoKit can't find them)
+        let missingUUIDs = uuids.filter { assets[$0] == nil }
 
-        // Export found assets with bounded concurrency
+        // Export found assets with bounded concurrency (unchanged)
         let exportResults = await withTaskGroup(
             of: Result<ExportResult, ExportErrorPair>.self
         ) { group in
@@ -50,7 +57,7 @@ public final class PhotoExporter: Sendable {
         }
 
         var allResults: [ExportResult] = []
-        var allErrors = errors
+        var allErrors: [ExportError] = []
         for result in exportResults {
             switch result {
             case .success(let exportResult):
@@ -60,7 +67,88 @@ public final class PhotoExporter: Sendable {
             }
         }
 
+        // AppleScript fallback for missing UUIDs (iCloud-only assets)
+        if !missingUUIDs.isEmpty {
+            let (fallbackResults, fallbackErrors) = await exportViaAppleScript(uuids: missingUUIDs)
+            allResults.append(contentsOf: fallbackResults)
+            allErrors.append(contentsOf: fallbackErrors)
+        }
+
         return ExportResponse(results: allResults, errors: allErrors)
+    }
+
+    /// Attempt AppleScript fallback for UUIDs that PhotoKit couldn't find.
+    private func exportViaAppleScript(
+        uuids: [String]
+    ) async -> ([ExportResult], [ExportError]) {
+        guard let scriptExporter else {
+            // No script exporter: report all as "not found" (original behavior)
+            let errors = uuids.map { ExportError(uuid: $0, message: "Asset not found in Photos library") }
+            return ([], errors)
+        }
+
+        // Check disk space before starting iCloud downloads
+        let freeSpace = availableDiskSpace(at: stagingDir)
+        if freeSpace < AppleScriptRunner.minimumFreeSpace {
+            let gbFree = Double(freeSpace) / 1_073_741_824
+            let errors = uuids.map { uuid in
+                ExportError(
+                    uuid: uuid,
+                    message: String(
+                        format: "Skipped iCloud download: only %.1f GB free (need 2 GB)",
+                        gbFree
+                    )
+                )
+            }
+            return ([], errors)
+        }
+
+        var results: [ExportResult] = []
+        var errors: [ExportError] = []
+
+        for uuid in uuids {
+            if Task.isCancelled { break }
+
+            do {
+                let exportedFile = try await scriptExporter.exportAsset(
+                    identifier: uuid,
+                    to: stagingDir,
+                    timeout: AppleScriptRunner.defaultTimeout
+                )
+
+                let sha256 = try FileHasher.sha256(fileAt: exportedFile)
+                let attrs = try FileManager.default.attributesOfItem(atPath: exportedFile.path)
+                let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+
+                // Move from temp subdirectory to staging dir with safe naming
+                let safeDest = try PathSafety.safeDestination(
+                    stagingDir: stagingDir,
+                    uuid: uuid,
+                    originalFilename: exportedFile.lastPathComponent
+                )
+                try FileManager.default.moveItem(at: exportedFile, to: safeDest)
+
+                // Clean up the per-asset temp subdirectory
+                let tempSubdir = exportedFile.deletingLastPathComponent()
+                if tempSubdir != stagingDir {
+                    try? FileManager.default.removeItem(at: tempSubdir)
+                }
+
+                results.append(ExportResult(
+                    uuid: uuid,
+                    path: safeDest.path,
+                    size: size,
+                    sha256: sha256
+                ))
+            } catch {
+                errors.append(ExportError(
+                    uuid: uuid,
+                    message: error.localizedDescription
+                ))
+            }
+        }
+
+        return (results, errors)
     }
 
     private func exportAsset(

@@ -78,7 +78,25 @@ for result in response.results {
 }
 ```
 
-Files are streamed from PhotoKit to disk. SHA-256 is computed inline during the write — no second pass. iCloud-only assets are downloaded transparently when `networkAccessAllowed` is true (the default).
+Files are streamed from PhotoKit to disk. SHA-256 is computed inline during the write — no second pass.
+
+#### iCloud-only assets
+
+When "Optimize Mac Storage" is enabled, some assets exist only in iCloud and are invisible to PhotoKit's `fetchAssets()`. For these assets, `PhotoExporter` falls back to AppleScript via Photos.app, which handles the iCloud download transparently:
+
+```swift
+let exporter = PhotoExporter(
+    stagingDir: stagingDir,
+    library: library,
+    scriptExporter: AppleScriptRunner() // enables iCloud fallback
+)
+```
+
+The fallback runs sequentially (one asset at a time) after all PhotoKit exports complete. SHA-256 is computed after export using `FileHasher`. Pass `scriptExporter: nil` to disable the fallback.
+
+This approach is inspired by [osxphotos](https://github.com/RhetTbull/osxphotos) (MIT license) by Rhet Turnbull.
+
+**Additional permission required:** The AppleScript fallback needs Automation permission (System Settings > Privacy & Security > Automation > ladder > Photos).
 
 ### Standalone Hashing
 
@@ -102,6 +120,7 @@ let fileHash = try FileHasher.sha256(fileAt: fileURL)
 | `PhotoLibrary` | Asset discovery and fetch by identifier |
 | `AssetHandle` | Single asset's exportable resource |
 | `PhotoExporter` | Concurrent export with inline hashing |
+| `ScriptExporter` | AppleScript fallback for iCloud-only assets |
 | `PhotosDatabase` | Photos.sqlite enrichment reader |
 | `PhotosLibraryPath` | Library bundle validation and path derivation |
 | `StreamingHasher` | Incremental SHA-256 |
@@ -155,6 +174,7 @@ All external dependencies are behind protocols:
 
 - `PhotoLibrary` — inject a mock that returns pre-configured assets
 - `AssetHandle` — inject a mock that writes known data
+- `ScriptExporter` — inject a mock for AppleScript fallback (or `nil` to disable)
 
 Tests run without Photos library access, Photos permission, or network. See `Tests/PhotoExporterTests.swift` for examples.
 
@@ -207,6 +227,7 @@ ladder request.json
 
 - **Photos access** — grant in System Settings > Privacy & Security > Photos
 - **Full Disk Access** — may be needed depending on library location
+- **Automation** (for iCloud-only assets) — grant in System Settings > Privacy & Security > Automation > ladder > Photos
 
 ## Project structure
 
@@ -218,6 +239,7 @@ Sources/
     AssetInfo.swift          AssetInfo, AssetKind, AlbumInfo, PersonInfo
     PhotoLibrary.swift       PhotoLibrary protocol + PhotoKit implementation
     PhotoExporter.swift      concurrent export with inline hashing
+    AppleScriptExporter.swift  iCloud-only fallback via Photos.app
     PhotosDatabase.swift     Photos.sqlite enrichment reader
     PhotosLibraryPath.swift  library bundle validation
     Hasher.swift             StreamingHasher + FileHasher
@@ -226,6 +248,7 @@ Sources/
 Tests/
     AssetInfoTests.swift
     PhotoExporterTests.swift
+    AppleScriptExporterTests.swift
     PhotosDatabaseTests.swift
     PhotosLibraryPathTests.swift
     HasherTests.swift

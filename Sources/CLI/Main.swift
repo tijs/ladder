@@ -31,7 +31,18 @@ struct Ladder {
             fatalExit(error.localizedDescription)
         }
 
-        let exporter = PhotoExporter(stagingDir: stagingURL)
+        let exporter = PhotoExporter(
+            stagingDir: stagingURL,
+            scriptExporter: AppleScriptRunner()
+        )
+
+        // Pre-flight: verify Automation permission before starting exports
+        do {
+            try await exporter.checkPermissions()
+        } catch {
+            fatalExit(error.localizedDescription)
+        }
+
         let response = await exporter.export(uuids: request.uuids)
 
         let encoder = JSONEncoder()
