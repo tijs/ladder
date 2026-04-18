@@ -21,6 +21,10 @@ public protocol PhotoLibrary: Sendable {
 public protocol AssetHandle: Sendable {
     var originalFilename: String { get }
     var resourceType: PHAssetResourceType { get }
+    /// True for iCloud Shared Album assets (`PHAsset.sourceType == .typeCloudShared`).
+    /// These go through a different iCloud pipeline that can fail server-side
+    /// with no recoverable fallback, so callers should skip retry paths on failure.
+    var isShared: Bool { get }
 
     /// Write the asset's original data to a file, streaming chunks to the handler.
     /// Each chunk is delivered to `chunkHandler` before being written, enabling
@@ -48,7 +52,10 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
             guard let resource = resources.first(where: { $0.type == .photo || $0.type == .video })
                 ?? resources.first
             else { return }
-            result[asset.localIdentifier] = PhotoKitAssetHandle(resource: resource)
+            result[asset.localIdentifier] = PhotoKitAssetHandle(
+                resource: resource,
+                isShared: asset.sourceType == .typeCloudShared,
+            )
         }
         return result
     }
@@ -95,6 +102,7 @@ public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
 
 struct PhotoKitAssetHandle: AssetHandle {
     let resource: PHAssetResource
+    let isShared: Bool
 
     var originalFilename: String { resource.originalFilename }
     var resourceType: PHAssetResourceType { resource.type }

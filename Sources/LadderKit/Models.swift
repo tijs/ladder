@@ -40,9 +40,24 @@ public struct ExportResponse: Codable, Sendable {
 public struct ExportError: Codable, Sendable {
     public let uuid: String
     public let message: String
+    /// The asset cannot be downloaded from iCloud and retries are pointless
+    /// (e.g. shared-album asset whose owner's derivative is unreachable).
+    public let unavailable: Bool
 
-    public init(uuid: String, message: String) {
+    public init(uuid: String, message: String, unavailable: Bool = false) {
         self.uuid = uuid
         self.message = message
+        self.unavailable = unavailable
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case uuid, message, unavailable
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        uuid = try c.decode(String.self, forKey: .uuid)
+        message = try c.decode(String.self, forKey: .message)
+        unavailable = try c.decodeIfPresent(Bool.self, forKey: .unavailable) ?? false
     }
 }

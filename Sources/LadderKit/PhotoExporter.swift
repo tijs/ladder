@@ -59,12 +59,23 @@ public final class PhotoExporter: Sendable {
         var allResults: [ExportResult] = []
         var allErrors: [ExportError] = []
         var photoKitFailedUUIDs: [String] = []
+        // Shared-album assets that fail PhotoKit go through iCloud's shared-stream
+        // pipeline, which the AppleScript path also uses — retrying via AppleScript
+        // just waits ~5min for the same server-side error. Short-circuit these.
         for result in exportResults {
             switch result {
             case .success(let exportResult):
                 allResults.append(exportResult)
             case .failure(let pair):
-                photoKitFailedUUIDs.append(pair.uuid)
+                if pair.isShared {
+                    allErrors.append(ExportError(
+                        uuid: pair.uuid,
+                        message: "Shared-album asset unavailable from iCloud: \(pair.message)",
+                        unavailable: true,
+                    ))
+                } else {
+                    photoKitFailedUUIDs.append(pair.uuid)
+                }
             }
         }
 
@@ -167,7 +178,11 @@ public final class PhotoExporter: Sendable {
                 originalFilename: handle.originalFilename
             )
         } catch {
-            return .failure(ExportErrorPair(uuid: uuid, message: error.localizedDescription))
+            return .failure(ExportErrorPair(
+                uuid: uuid,
+                message: error.localizedDescription,
+                isShared: handle.isShared,
+            ))
         }
 
         // Create empty file for writing
@@ -192,7 +207,11 @@ public final class PhotoExporter: Sendable {
         } catch {
             // Clean up the empty/partial file so AppleScript fallback can reuse the path
             try? FileManager.default.removeItem(at: destURL)
-            return .failure(ExportErrorPair(uuid: uuid, message: error.localizedDescription))
+            return .failure(ExportErrorPair(
+                uuid: uuid,
+                message: error.localizedDescription,
+                isShared: handle.isShared,
+            ))
         }
     }
 }
@@ -201,6 +220,7 @@ public final class PhotoExporter: Sendable {
 struct ExportErrorPair: Error, Sendable {
     let uuid: String
     let message: String
+    let isShared: Bool
 }
 
 public enum ExportFailure: LocalizedError {

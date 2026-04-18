@@ -38,6 +38,7 @@ struct MockScriptExporter: ScriptExporter {
 struct FailingAssetHandle: AssetHandle {
     let originalFilename: String
     let resourceType: PHAssetResourceType = .photo
+    var isShared: Bool = false
 
     func writeData(
         to destinationURL: URL,

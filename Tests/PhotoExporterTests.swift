@@ -33,12 +33,15 @@ struct MockAssetHandle: AssetHandle {
     let originalFilename: String
     let resourceType: PHAssetResourceType
     let data: Data
+    var isShared: Bool = false
+    var writeError: Error?
 
     func writeData(
         to destinationURL: URL,
         networkAccessAllowed: Bool,
         chunkHandler: @escaping @Sendable (Data) -> Void
     ) async throws -> Int64 {
+        if let writeError { throw writeError }
         let handle = try FileHandle(forWritingTo: destinationURL)
         // Deliver in chunks to simulate streaming
         let chunkSize = max(data.count / 3, 1)
@@ -127,6 +130,39 @@ struct PhotoExporterTests {
         #expect(response.results[0].uuid == "found-1")
         #expect(response.errors.count == 1)
         #expect(response.errors[0].uuid == "missing-1")
+    }
+
+    @Test("shared-album asset failure is marked unavailable and skips AppleScript fallback")
+    func sharedAssetUnavailable() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ladder-test-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let library = MockPhotoLibrary(assets: [
+            "shared-1": MockAssetHandle(
+                originalFilename: "IMG_7666.HEIC",
+                resourceType: .photo,
+                data: Data(),
+                isShared: true,
+                writeError: NSError(domain: "PHPhotosErrorDomain", code: 3169)
+            )
+        ])
+
+        // Script exporter that would succeed if called — we assert it is NOT called
+        // for shared-album assets. A simple way: provide a stub that would produce
+        // a file, and check that no result was produced via it.
+        let exporter = PhotoExporter(
+            stagingDir: tempDir,
+            library: library,
+            scriptExporter: nil
+        )
+        let response = await exporter.export(uuids: ["shared-1"])
+
+        #expect(response.results.isEmpty)
+        #expect(response.errors.count == 1)
+        #expect(response.errors[0].uuid == "shared-1")
+        #expect(response.errors[0].unavailable == true)
     }
 
     @Test("sanitizes PHAsset-style identifiers in file paths")

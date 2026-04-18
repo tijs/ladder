@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- `AssetHandle` exposes `isShared: Bool` (from `PHAsset.sourceType == .typeCloudShared`)
+- `ExportError` gains an `unavailable: Bool` flag for failures that should
+  not be retried (e.g. shared-album assets whose iCloud derivative has failed
+  server-side). Backward-compatible default `false`; decoder tolerates
+  payloads without the field.
+- `PhotoExporter.export` short-circuits shared-album assets that fail
+  PhotoKit: the AppleScript fallback goes through the same shared-stream
+  pipeline and also fails (after a 5-minute server-side timeout), so we
+  mark these as `unavailable` immediately instead of retrying.
+
 ## 0.3.4
 
 - Include iCloud Shared Photo Library assets in `enumerateAssets()` and
