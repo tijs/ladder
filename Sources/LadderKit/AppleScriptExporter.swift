@@ -69,6 +69,16 @@ public struct AppleScriptRunner: ScriptExporter {
             if result.timedOut {
                 throw AppleScriptError.timeout(bareUUID, timeout)
             }
+            // -1728 = "Can't get media item" — asset is not retrievable from
+            // Photos.app at all (typical for shared-album assets whose
+            // derivative has gone missing server-side). Retrying just waits
+            // another 5-10 minutes for the same error.
+            if result.stderr.contains("-1728") {
+                throw AppleScriptError.assetUnavailable(
+                    bareUUID,
+                    result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            }
             throw AppleScriptError.scriptFailed(
                 bareUUID,
                 result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,6 +243,9 @@ public enum AppleScriptError: LocalizedError, Sendable {
     case timeout(String, TimeInterval)
     case scriptFailed(String, String)
     case noFileProduced(String)
+    /// Photos.app reported the asset cannot be retrieved (error -1728). Retrying
+    /// is pointless — typically a shared-album asset whose derivative is gone.
+    case assetUnavailable(String, String)
 
     public var errorDescription: String? {
         switch self {
@@ -245,6 +258,8 @@ public enum AppleScriptError: LocalizedError, Sendable {
             return "AppleScript export failed for asset \(uuid): \(message)"
         case .noFileProduced(let uuid):
             return "AppleScript export produced no file for asset \(uuid)"
+        case .assetUnavailable(let uuid, let message):
+            return "Asset \(uuid) is unavailable from iCloud: \(message)"
         }
     }
 }

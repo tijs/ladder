@@ -25,4 +25,15 @@ public struct PhotosDatabaseLocalAvailability: LocalAvailabilityProviding {
     public func isLocallyAvailable(uuid: String) -> Bool {
         localUUIDs.contains(uuid)
     }
+
+    /// Convenience: load availability directly from a Photos library bundle.
+    /// Returns `nil` if the library's `Photos.sqlite` can't be located.
+    public static func fromLibrary(at libraryURL: URL) -> PhotosDatabaseLocalAvailability? {
+        guard let dbPath = PhotosLibraryPath.databasePath(for: libraryURL) else {
+            return nil
+        }
+        return PhotosDatabaseLocalAvailability(
+            localUUIDs: PhotosDatabase.localAvailableUUIDs(dbPath: dbPath)
+        )
+    }
 }

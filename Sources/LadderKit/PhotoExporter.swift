@@ -212,9 +212,12 @@ public final class PhotoExporter: Sendable {
                     errors.append(ExportError(
                         uuid: fail.uuid,
                         message: fail.message,
-                        classification: .transientCloud
+                        classification: fail.classification
                     ))
-                    await controller?.record(.transientFailure)
+                    await controller?.record(
+                        fail.classification == .permanentlyUnavailable
+                            ? .permanentFailure : .transientFailure
+                    )
                 }
 
                 if Task.isCancelled {
@@ -268,8 +271,24 @@ public final class PhotoExporter: Sendable {
                 size: size,
                 sha256: sha256
             ))
+        } catch let err as AppleScriptError {
+            let classification: ExportClassification
+            if case .assetUnavailable = err {
+                classification = .permanentlyUnavailable
+            } else {
+                classification = .transientCloud
+            }
+            return .failure(ScriptFailure(
+                uuid: uuid,
+                message: err.localizedDescription,
+                classification: classification
+            ))
         } catch {
-            return .failure(ScriptFailure(uuid: uuid, message: error.localizedDescription))
+            return .failure(ScriptFailure(
+                uuid: uuid,
+                message: error.localizedDescription,
+                classification: .transientCloud
+            ))
         }
     }
 
@@ -331,6 +350,7 @@ struct ExportErrorPair: Error, Sendable {
 private struct ScriptFailure: Error, Sendable {
     let uuid: String
     let message: String
+    let classification: ExportClassification
 }
 
 public enum ExportFailure: LocalizedError {

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.5.1
+
+Review-driven fixes on top of 0.5.0. No API removals; additive only.
+
+- `AppleScriptError.assetUnavailable(uuid, message)` — new case raised when
+  Photos.app reports `-1728 "Can't get media item"`. Retrying is pointless for
+  these (typically shared-album assets whose derivative is gone server-side).
+  `PhotoExporter` maps this to `ExportClassification.permanentlyUnavailable`
+  and reports `.permanentFailure` to the adaptive controller, so the iCloud
+  lane doesn't throttle down on genuinely-dead assets.
+- `ScriptFailure` now carries a `classification`, so per-asset classification
+  flows through the AppleScript fallback path instead of being flattened to
+  `.transientCloud`.
+- `PhotoKitLibrary.fetchAssets(identifiers:)` now keys the returned dict by
+  whatever the caller passed in (bare UUID or full `"UUID/L0/001"` local
+  identifier). Previously it always returned PhotoKit's full identifier, and
+  callers had to split the string. Makes the UUID contract explicit at the
+  library boundary.
+- `PhotoKitLibrary.loadEnrichedAssets(libraryURL:)` — static convenience that
+  enumerates assets and applies Photos.sqlite enrichment in one call.
+- `PhotosDatabaseLocalAvailability.fromLibrary(at:)` — static convenience that
+  locates the library's `Photos.sqlite` and loads the locally-available UUID
+  set in one call.
+
 ## 0.5.0
 
 Adaptive export: partition a batch into local vs. iCloud work, and let the

@@ -40,19 +40,38 @@ public protocol AssetHandle: Sendable {
 public struct PhotoKitLibrary: PhotoLibrary, @unchecked Sendable {
     public init() {}
 
+    /// Enumerate all non-trashed assets and enrich them from Photos.sqlite
+    /// (filenames, albums, keywords, people, descriptions, edits). If the
+    /// library's database can't be located, returns the un-enriched list.
+    public static func loadEnrichedAssets(libraryURL: URL) -> [AssetInfo] {
+        var assets = PhotoKitLibrary().enumerateAssets()
+        if let dbPath = PhotosLibraryPath.databasePath(for: libraryURL) {
+            let enrichment = PhotosDatabase.readEnrichment(dbPath: dbPath)
+            PhotosDatabase.enrich(&assets, with: enrichment)
+        }
+        return assets
+    }
+
     public func fetchAssets(identifiers: [String]) -> [String: AssetHandle] {
         let fetchResult = PHAsset.fetchAssets(
             withLocalIdentifiers: identifiers,
             options: nil
         )
 
+        // PhotoKit returns assets keyed by their full localIdentifier
+        // ("UUID/L0/001"). Callers may pass bare UUIDs or full identifiers;
+        // match each fetched asset back to the caller's input string so the
+        // returned dict is keyed by whatever the caller asked for.
         var result: [String: AssetHandle] = [:]
         fetchResult.enumerateObjects { asset, _, _ in
             let resources = PHAssetResource.assetResources(for: asset)
             guard let resource = resources.first(where: { $0.type == .photo || $0.type == .video })
                 ?? resources.first
             else { return }
-            result[asset.localIdentifier] = PhotoKitAssetHandle(
+            let key = identifiers.first(where: { id in
+                asset.localIdentifier == id || asset.localIdentifier.hasPrefix(id + "/")
+            }) ?? asset.localIdentifier
+            result[key] = PhotoKitAssetHandle(
                 resource: resource,
                 isShared: asset.sourceType == .typeCloudShared,
             )
