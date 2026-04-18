@@ -62,6 +62,41 @@ public enum PhotosDatabase {
         )
     }
 
+    /// Return the set of asset UUIDs whose original resource bytes are present
+    /// locally on disk (not iCloud-only).
+    ///
+    /// Queries `ZINTERNALRESOURCE.ZLOCALAVAILABILITY = 1` for the original
+    /// resource (`ZDATASTORESUBTYPE = 1`). Used by the adaptive backup pipeline
+    /// to partition assets into a local lane (full concurrency) and an iCloud
+    /// lane (gated by adaptive concurrency).
+    ///
+    /// Returns an empty set if the database cannot be opened or the schema
+    /// differs from what's expected.
+    public static func localAvailableUUIDs(dbPath: String) -> Set<String> {
+        guard let db = openDatabase(path: dbPath) else {
+            return []
+        }
+        defer { sqlite3_close(db) }
+
+        var uuids: Set<String> = []
+        safeQuery(
+            db: db,
+            sql: """
+                SELECT a.ZUUID
+                FROM ZASSET a
+                JOIN ZINTERNALRESOURCE ir ON ir.ZASSET = a.Z_PK
+                WHERE a.ZTRASHEDSTATE = 0
+                  AND ir.ZDATASTORESUBTYPE = 1
+                  AND ir.ZLOCALAVAILABILITY = 1
+                """
+        ) { stmt in
+            if let uuid = stringColumn(stmt, 0) {
+                uuids.insert(uuid)
+            }
+        }
+        return uuids
+    }
+
     /// Apply enrichment data to an array of assets in-place.
     ///
     /// Matches assets by their `uuid` property (extracted from PhotoKit's

@@ -24,85 +24,151 @@ public final class PhotoExporter: Sendable {
         try await scriptExporter?.checkPermissions()
     }
 
-    public func export(uuids: [String]) async -> ExportResponse {
+    /// Export the requested assets.
+    ///
+    /// When `localAvailability` is provided, the exporter partitions assets
+    /// into a local lane (full `maxConcurrency`) and an iCloud lane. When
+    /// `adaptiveController` is also provided, the iCloud lane polls its
+    /// ``AdaptiveConcurrencyControlling/currentLimit()`` between dispatches
+    /// and reports each outcome via ``AdaptiveConcurrencyControlling/record(_:)``.
+    /// Passing both as `nil` preserves 0.4.x behavior.
+    public func export(
+        uuids: [String],
+        localAvailability: LocalAvailabilityProviding? = nil,
+        adaptiveController: AdaptiveConcurrencyControlling? = nil
+    ) async -> ExportResponse {
         let assets = library.fetchAssets(identifiers: uuids)
 
-        // Identify missing UUIDs (PhotoKit can't find them)
+        // UUIDs PhotoKit can't find at all → straight to AppleScript fallback
+        // (iCloud-only by definition — invisible to PhotoKit fetch).
         let missingUUIDs = uuids.filter { assets[$0] == nil }
 
-        // Export found assets with bounded concurrency (unchanged)
-        let exportResults = await withTaskGroup(
-            of: Result<ExportResult, ExportErrorPair>.self
-        ) { group in
-            var pending = 0
-            var iterator = assets.makeIterator()
-            var results: [Result<ExportResult, ExportErrorPair>] = []
-
-            // Seed the group with initial tasks up to maxConcurrency
-            while pending < maxConcurrency, let (uuid, handle) = iterator.next() {
-                group.addTask { await self.exportAsset(uuid: uuid, handle: handle) }
-                pending += 1
+        // Partition found assets. Anything not known-local is treated as
+        // cloud so a missing availability provider degrades to 0.4.x behavior.
+        var localItems: [(String, AssetHandle)] = []
+        var cloudItems: [(String, AssetHandle)] = []
+        for (uuid, handle) in assets {
+            if localAvailability?.isLocallyAvailable(uuid: uuid) == true {
+                localItems.append((uuid, handle))
+            } else {
+                cloudItems.append((uuid, handle))
             }
-
-            // As each completes, start the next (checking cancellation between assets)
-            for await result in group {
-                results.append(result)
-                if Task.isCancelled { break }
-                if let (uuid, handle) = iterator.next() {
-                    group.addTask { await self.exportAsset(uuid: uuid, handle: handle) }
-                }
-            }
-
-            return results
         }
 
-        var allResults: [ExportResult] = []
+        async let localExec = runPhotoKitLane(items: localItems, controller: nil)
+        async let cloudExec = runPhotoKitLane(items: cloudItems, controller: adaptiveController)
+
+        let localRun = await localExec
+        let cloudRun = await cloudExec
+
+        var allResults = localRun.results + cloudRun.results
         var allErrors: [ExportError] = []
         var photoKitFailedUUIDs: [String] = []
-        // Shared-album assets that fail PhotoKit go through iCloud's shared-stream
-        // pipeline, which the AppleScript path also uses — retrying via AppleScript
-        // just waits ~5min for the same server-side error. Short-circuit these.
-        for result in exportResults {
-            switch result {
-            case .success(let exportResult):
-                allResults.append(exportResult)
-            case .failure(let pair):
-                if pair.isShared {
-                    allErrors.append(ExportError(
-                        uuid: pair.uuid,
-                        message: "Shared-album asset unavailable from iCloud: \(pair.message)",
-                        unavailable: true,
-                    ))
-                } else {
-                    photoKitFailedUUIDs.append(pair.uuid)
-                }
+
+        // Shared-album assets that fail PhotoKit go through iCloud's shared-
+        // stream pipeline, which the AppleScript path also uses — retrying
+        // just waits ~5min for the same server-side error. Short-circuit.
+        for pair in localRun.failures + cloudRun.failures {
+            if pair.isShared {
+                allErrors.append(ExportError(
+                    uuid: pair.uuid,
+                    message: "Shared-album asset unavailable from iCloud: \(pair.message)",
+                    classification: .permanentlyUnavailable
+                ))
+            } else {
+                photoKitFailedUUIDs.append(pair.uuid)
             }
         }
 
-        // AppleScript fallback for:
-        // 1. UUIDs that PhotoKit couldn't find at all (iCloud-only, invisible to fetchAssets)
-        // 2. UUIDs that PhotoKit found but failed to export (e.g. iCloud download errors)
         let fallbackUUIDs = missingUUIDs + photoKitFailedUUIDs
         if !fallbackUUIDs.isEmpty {
-            let (fallbackResults, fallbackErrors) = await exportViaAppleScript(uuids: fallbackUUIDs)
-            allResults.append(contentsOf: fallbackResults)
-            allErrors.append(contentsOf: fallbackErrors)
+            let fb = await exportViaAppleScript(
+                uuids: fallbackUUIDs,
+                controller: adaptiveController
+            )
+            allResults.append(contentsOf: fb.results)
+            allErrors.append(contentsOf: fb.errors)
         }
 
         return ExportResponse(results: allResults, errors: allErrors)
     }
 
-    /// Attempt AppleScript fallback for UUIDs that PhotoKit couldn't find.
+    /// Run a PhotoKit export over `items` with bounded, optionally adaptive
+    /// concurrency. When `controller` is non-nil, each completion polls
+    /// `currentLimit()` and records the outcome.
+    private func runPhotoKitLane(
+        items: [(String, AssetHandle)],
+        controller: AdaptiveConcurrencyControlling?
+    ) async -> (results: [ExportResult], failures: [ExportErrorPair]) {
+        if items.isEmpty { return ([], []) }
+
+        return await withTaskGroup(
+            of: Result<ExportResult, ExportErrorPair>.self
+        ) { group in
+            var iterator = items.makeIterator()
+            var inflight = 0
+
+            // Seed up to the current limit.
+            var limit = await self.effectiveLimit(controller)
+            while inflight < limit, let (uuid, handle) = iterator.next() {
+                group.addTask { await self.exportAsset(uuid: uuid, handle: handle) }
+                inflight += 1
+            }
+
+            var results: [ExportResult] = []
+            var failures: [ExportErrorPair] = []
+
+            for await result in group {
+                inflight -= 1
+
+                switch result {
+                case .success(let ok):
+                    results.append(ok)
+                    await controller?.record(.success)
+                case .failure(let pair):
+                    failures.append(pair)
+                    await controller?.record(pair.isShared ? .permanentFailure : .transientFailure)
+                }
+
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
+
+                // Re-poll — the controller may have adjusted between tasks.
+                limit = await self.effectiveLimit(controller)
+                while inflight < limit, let (uuid, handle) = iterator.next() {
+                    group.addTask { await self.exportAsset(uuid: uuid, handle: handle) }
+                    inflight += 1
+                }
+            }
+
+            return (results, failures)
+        }
+    }
+
+    private func effectiveLimit(
+        _ controller: AdaptiveConcurrencyControlling?
+    ) async -> Int {
+        guard let controller else { return maxConcurrency }
+        let limit = await controller.currentLimit()
+        return max(1, min(maxConcurrency, limit))
+    }
+
+    /// AppleScript fallback, gated the same way as the PhotoKit iCloud lane.
+    /// All failures here are iCloud-related by construction — classify as
+    /// ``ExportClassification/transientCloud``.
     private func exportViaAppleScript(
-        uuids: [String]
-    ) async -> ([ExportResult], [ExportError]) {
+        uuids: [String],
+        controller: AdaptiveConcurrencyControlling?
+    ) async -> (results: [ExportResult], errors: [ExportError]) {
         guard let scriptExporter else {
-            // No script exporter: report all as "not found" (original behavior)
-            let errors = uuids.map { ExportError(uuid: $0, message: "Asset not found in Photos library") }
+            let errors = uuids.map {
+                ExportError(uuid: $0, message: "Asset not found in Photos library")
+            }
             return ([], errors)
         }
 
-        // Check disk space before starting iCloud downloads
         let freeSpace = availableDiskSpace(at: stagingDir)
         if freeSpace < AppleScriptRunner.minimumFreeSpace {
             let gbFree = Double(freeSpace) / 1_073_741_824
@@ -118,52 +184,93 @@ public final class PhotoExporter: Sendable {
             return ([], errors)
         }
 
-        var results: [ExportResult] = []
-        var errors: [ExportError] = []
+        return await withTaskGroup(
+            of: Result<ExportResult, ScriptFailure>.self
+        ) { group in
+            var iterator = uuids.makeIterator()
+            var inflight = 0
 
-        for uuid in uuids {
-            if Task.isCancelled { break }
+            var limit = await self.effectiveLimit(controller)
+            while inflight < limit, let uuid = iterator.next() {
+                group.addTask {
+                    await self.scriptExportAsset(uuid: uuid, scriptExporter: scriptExporter)
+                }
+                inflight += 1
+            }
 
-            do {
-                let exportedFile = try await scriptExporter.exportAsset(
-                    identifier: uuid,
-                    to: stagingDir,
-                    timeout: AppleScriptRunner.defaultTimeout
-                )
+            var results: [ExportResult] = []
+            var errors: [ExportError] = []
 
-                let sha256 = try FileHasher.sha256(fileAt: exportedFile)
-                let attrs = try FileManager.default.attributesOfItem(atPath: exportedFile.path)
-                let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+            for await result in group {
+                inflight -= 1
 
-                // Move from temp subdirectory to staging dir with safe naming
-                let safeDest = try PathSafety.safeDestination(
-                    stagingDir: stagingDir,
-                    uuid: uuid,
-                    originalFilename: exportedFile.lastPathComponent
-                )
-                try FileManager.default.moveItem(at: exportedFile, to: safeDest)
-
-                // Clean up the per-asset temp subdirectory
-                let tempSubdir = exportedFile.deletingLastPathComponent()
-                if tempSubdir != stagingDir {
-                    try? FileManager.default.removeItem(at: tempSubdir)
+                switch result {
+                case .success(let ok):
+                    results.append(ok)
+                    await controller?.record(.success)
+                case .failure(let fail):
+                    errors.append(ExportError(
+                        uuid: fail.uuid,
+                        message: fail.message,
+                        classification: .transientCloud
+                    ))
+                    await controller?.record(.transientFailure)
                 }
 
-                results.append(ExportResult(
-                    uuid: uuid,
-                    path: safeDest.path,
-                    size: size,
-                    sha256: sha256
-                ))
-            } catch {
-                errors.append(ExportError(
-                    uuid: uuid,
-                    message: error.localizedDescription
-                ))
-            }
-        }
+                if Task.isCancelled {
+                    group.cancelAll()
+                    break
+                }
 
-        return (results, errors)
+                limit = await self.effectiveLimit(controller)
+                while inflight < limit, let uuid = iterator.next() {
+                    group.addTask {
+                        await self.scriptExportAsset(uuid: uuid, scriptExporter: scriptExporter)
+                    }
+                    inflight += 1
+                }
+            }
+
+            return (results, errors)
+        }
+    }
+
+    private func scriptExportAsset(
+        uuid: String,
+        scriptExporter: ScriptExporter
+    ) async -> Result<ExportResult, ScriptFailure> {
+        do {
+            let exportedFile = try await scriptExporter.exportAsset(
+                identifier: uuid,
+                to: stagingDir,
+                timeout: AppleScriptRunner.defaultTimeout
+            )
+
+            let sha256 = try FileHasher.sha256(fileAt: exportedFile)
+            let attrs = try FileManager.default.attributesOfItem(atPath: exportedFile.path)
+            let size = (attrs[.size] as? NSNumber)?.int64Value ?? 0
+
+            let safeDest = try PathSafety.safeDestination(
+                stagingDir: stagingDir,
+                uuid: uuid,
+                originalFilename: exportedFile.lastPathComponent
+            )
+            try FileManager.default.moveItem(at: exportedFile, to: safeDest)
+
+            let tempSubdir = exportedFile.deletingLastPathComponent()
+            if tempSubdir != stagingDir {
+                try? FileManager.default.removeItem(at: tempSubdir)
+            }
+
+            return .success(ExportResult(
+                uuid: uuid,
+                path: safeDest.path,
+                size: size,
+                sha256: sha256
+            ))
+        } catch {
+            return .failure(ScriptFailure(uuid: uuid, message: error.localizedDescription))
+        }
     }
 
     private func exportAsset(
@@ -181,15 +288,13 @@ public final class PhotoExporter: Sendable {
             return .failure(ExportErrorPair(
                 uuid: uuid,
                 message: error.localizedDescription,
-                isShared: handle.isShared,
+                isShared: handle.isShared
             ))
         }
 
-        // Create empty file for writing
         FileManager.default.createFile(atPath: destURL.path, contents: nil)
 
         do {
-            // Stream data: write to file + hash simultaneously
             let hasher = StreamingHasher()
             let size = try await handle.writeData(
                 to: destURL,
@@ -205,22 +310,27 @@ public final class PhotoExporter: Sendable {
                 sha256: sha256
             ))
         } catch {
-            // Clean up the empty/partial file so AppleScript fallback can reuse the path
             try? FileManager.default.removeItem(at: destURL)
             return .failure(ExportErrorPair(
                 uuid: uuid,
                 message: error.localizedDescription,
-                isShared: handle.isShared,
+                isShared: handle.isShared
             ))
         }
     }
 }
 
-/// Internal type for passing errors through TaskGroup.
+/// Internal type for passing PhotoKit-lane errors through TaskGroup.
 struct ExportErrorPair: Error, Sendable {
     let uuid: String
     let message: String
     let isShared: Bool
+}
+
+/// Internal type for passing AppleScript-lane errors through TaskGroup.
+private struct ScriptFailure: Error, Sendable {
+    let uuid: String
+    let message: String
 }
 
 public enum ExportFailure: LocalizedError {

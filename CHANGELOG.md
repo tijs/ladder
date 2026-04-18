@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0
+
+Adaptive export: partition a batch into local vs. iCloud work, and let the
+caller throttle the iCloud lane when Photos/iCloud pushes back. LadderKit
+supplies the mechanism (partitioning, protocol, outcome reporting); the
+caller owns the policy (the actual controller implementation).
+
+- `PhotosDatabase.localAvailableUUIDs(dbPath:)` — returns the set of asset
+  UUIDs whose original resource is cached locally (via
+  `ZINTERNALRESOURCE.ZLOCALAVAILABILITY = 1`).
+- `LocalAvailabilityProviding` protocol + `PhotosDatabaseLocalAvailability`
+  implementation backed by that query.
+- `AdaptiveConcurrencyControlling` protocol and `ExportOutcome` enum. The
+  protocol is observation-only: `currentLimit()` and `record(_:)`. The
+  exporter polls the limit between dispatches — no shared permit bookkeeping.
+  LadderKit ships no concrete controller; plug in your own policy.
+- `ExportError.classification: ExportClassification` — `other`,
+  `transientCloud`, or `permanentlyUnavailable`. Backward-compatible: legacy
+  payloads without the field decode as `other`, or `permanentlyUnavailable`
+  when the legacy `unavailable == true` flag is set.
+- `PhotoExporter.export(uuids:localAvailability:adaptiveController:)` — new
+  optional parameters. When provided, the exporter runs two lanes in
+  parallel: the local lane at `maxConcurrency`, the iCloud lane gated by the
+  controller's current limit. The AppleScript fallback is now also parallel
+  and gated by the same controller. Proper cancellation: the group is
+  cancelled when `Task.isCancelled` trips.
+
+Fully backward compatible with 0.4.x — existing call sites keep working.
+
 ## 0.4.0
 
 - `AssetHandle` exposes `isShared: Bool` (from `PHAsset.sourceType == .typeCloudShared`)
