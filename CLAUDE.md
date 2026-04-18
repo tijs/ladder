@@ -6,21 +6,25 @@ Swift library and CLI for accessing the macOS Photos library. Part of the photo-
 
 ```bash
 swift build -c release | xcsift    # Build release binary
-swift test | xcsift                 # Run tests (44 tests, 8 suites)
+swift test | xcsift                 # Run tests (63 tests)
 swiftlint --fix                    # Auto-fix lint issues
 ```
 
 ## Architecture
 
 - **LadderKit** (library product): consumed by other Swift packages via SPM
-  - `PhotoLibrary` protocol + `PhotoKitLibrary` — asset discovery and export via PhotoKit
-  - `PhotosDatabase` — reads Photos.sqlite for metadata enrichment (keywords, people, descriptions, albums, filenames, edits)
+  - `PhotoLibrary` protocol + `PhotoKitLibrary` — asset discovery and export via PhotoKit. `fetchAssets` preserves caller-provided identifier keys (bare UUID or full `"UUID/L0/001"`). `loadEnrichedAssets(libraryURL:)` is a one-call convenience that enumerates + enriches.
+  - `PhotosDatabase` — reads Photos.sqlite for metadata enrichment (keywords, people, descriptions, albums, filenames, edits) and local-availability flags.
   - `PhotosLibraryPath` — validates `.photoslibrary` bundles, derives database paths
-  - `PhotoExporter` — concurrent file export with inline SHA-256 hashing
+  - `PhotoExporter` — concurrent file export with inline SHA-256 hashing. Partitions a batch into local vs. iCloud lanes; the iCloud lane can be throttled by an `AdaptiveConcurrencyControlling` controller.
+  - `LocalAvailabilityProviding` + `PhotosDatabaseLocalAvailability` — tells the exporter which assets are cached locally (`ZLOCALAVAILABILITY = 1`) so iCloud-only work can be isolated. Use `.fromLibrary(at:)` for one-call setup.
+  - `AdaptiveConcurrencyControlling` + `ExportOutcome` — observation-only protocol for tuning the iCloud lane. LadderKit ships no concrete controller; callers own the policy. Outcomes are `.success`, `.transientFailure`, `.permanentFailure`.
+  - `AppleScriptRunner` / `ScriptExporter` — iCloud-only fallback via Photos.app. Detects `-1728 "Can't get media item"` and raises `AppleScriptError.assetUnavailable`, which the exporter maps to `ExportClassification.permanentlyUnavailable`.
+  - `ExportError.classification` — `.other`, `.transientCloud`, or `.permanentlyUnavailable`. Flows end-to-end so callers can route retry/skip decisions without string-matching.
   - `StreamingHasher` / `FileHasher` — incremental and one-shot SHA-256
   - `PathSafety` — filename sanitization and path traversal prevention
   - `AssetInfo`, `AlbumInfo`, `PersonInfo`, `AssetKind` — data models (all `Codable` + `Sendable`)
-- **CLI** (executable): thin JSON-in/JSON-out wrapper around `PhotoExporter` for subprocess use by the attic Deno CLI
+- **CLI** (executable): thin JSON-in/JSON-out wrapper around `PhotoExporter`. Kept for ad-hoc use; the Swift `attic` CLI consumes LadderKit directly as a library.
 
 ## Key Design Decisions
 

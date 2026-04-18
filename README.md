@@ -12,7 +12,7 @@ Add LadderKit as a dependency in your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tijs/ladder", from: "0.2.0"),
+    .package(url: "https://github.com/tijs/ladder", from: "0.5.1"),
 ],
 targets: [
     .target(
@@ -94,9 +94,68 @@ let exporter = PhotoExporter(
 
 The fallback runs sequentially (one asset at a time) after all PhotoKit exports complete. SHA-256 is computed after export using `FileHasher`. Pass `scriptExporter: nil` to disable the fallback.
 
+When Photos.app reports `-1728 "Can't get media item"` (typical for shared-album assets whose derivative has gone missing server-side), the runner raises `AppleScriptError.assetUnavailable` and the exporter classifies the error as `.permanentlyUnavailable` so callers can skip-forever instead of retrying.
+
 This approach is inspired by [osxphotos](https://github.com/RhetTbull/osxphotos) (MIT license) by Rhet Turnbull.
 
 **Additional permission required:** The AppleScript fallback needs Automation permission (System Settings > Privacy & Security > Automation > ladder > Photos).
+
+### Adaptive iCloud-lane throttling
+
+When "Optimize Mac Storage" is enabled, a batch typically mixes locally-cached assets (fast, parallel-safe) with iCloud-only assets (slow, easily throttled by iCloud). `PhotoExporter` can partition the batch and apply separate concurrency limits per lane.
+
+```swift
+let availability = PhotosDatabaseLocalAvailability.fromLibrary(at: libraryURL)
+let exporter = PhotoExporter(
+    stagingDir: stagingDir,
+    library: library,
+    scriptExporter: AppleScriptRunner(),
+    localAvailability: availability,
+    adaptiveController: MyAIMDController() // your policy
+)
+```
+
+`AdaptiveConcurrencyControlling` is observation-only:
+
+```swift
+public protocol AdaptiveConcurrencyControlling: Sendable {
+    func currentLimit() async -> Int
+    func record(_ outcome: ExportOutcome) async
+}
+
+public enum ExportOutcome: Sendable {
+    case success
+    case transientFailure       // iCloud throttling / network blip — tune down
+    case permanentFailure       // asset gone — ignore for tuning
+}
+```
+
+LadderKit ships no concrete controller. Implement your own (AIMD, EWMA, whatever fits) or pass `nil` to run the iCloud lane at the exporter's static `maxConcurrency`.
+
+### Local-availability lookup
+
+`PhotosDatabaseLocalAvailability` reads `ZINTERNALRESOURCE.ZLOCALAVAILABILITY` to determine which asset originals are cached locally:
+
+```swift
+guard let availability = PhotosDatabaseLocalAvailability.fromLibrary(at: libraryURL)
+else { return }
+
+if availability.isLocallyAvailable(uuid: "B84E8479-475C-4727-A7F4-B3D5E5D71923") {
+    // export will be fast, no iCloud round-trip
+}
+```
+
+### Error classification
+
+`ExportError.classification` distinguishes genuinely-dead assets from transient failures, so callers can route retry/skip decisions without parsing messages:
+
+```swift
+public enum ExportClassification: Sendable {
+    case other                  // unclassified
+    case transientCloud         // retry later
+    case permanentlyUnavailable // skip forever (e.g., -1728)
+}
+```
 
 ### Standalone Hashing
 
@@ -117,11 +176,16 @@ let fileHash = try FileHasher.sha256(fileAt: fileURL)
 
 | Protocol / Type | Purpose |
 |---|---|
-| `PhotoLibrary` | Asset discovery and fetch by identifier |
-| `AssetHandle` | Single asset's exportable resource |
-| `PhotoExporter` | Concurrent export with inline hashing |
-| `ScriptExporter` | AppleScript fallback for iCloud-only assets |
-| `PhotosDatabase` | Photos.sqlite enrichment reader |
+| `PhotoLibrary` | Asset discovery and fetch by identifier (keys preserved) |
+| `PhotoKitLibrary.loadEnrichedAssets(libraryURL:)` | Enumerate + enrich in one call |
+| `AssetHandle` | Single asset's exportable resource (`isShared` flag for shared-album detection) |
+| `PhotoExporter` | Concurrent export with inline hashing, local/iCloud lane partition |
+| `AdaptiveConcurrencyControlling` / `ExportOutcome` | Throttle the iCloud lane with your own policy |
+| `LocalAvailabilityProviding` / `PhotosDatabaseLocalAvailability` | Which assets are cached locally |
+| `ScriptExporter` / `AppleScriptRunner` | AppleScript fallback for iCloud-only assets |
+| `AppleScriptError` | Includes `.assetUnavailable` for permanent `-1728` failures |
+| `ExportError.classification` | `.other` / `.transientCloud` / `.permanentlyUnavailable` |
+| `PhotosDatabase` | Photos.sqlite enrichment reader (+ `localAvailableUUIDs`) |
 | `PhotosLibraryPath` | Library bundle validation and path derivation |
 | `StreamingHasher` | Incremental SHA-256 |
 | `FileHasher` | One-shot file SHA-256 |
@@ -238,7 +302,9 @@ Sources/
   LadderKit/
     AssetInfo.swift          AssetInfo, AssetKind, AlbumInfo, PersonInfo
     PhotoLibrary.swift       PhotoLibrary protocol + PhotoKit implementation
-    PhotoExporter.swift      concurrent export with inline hashing
+    PhotoExporter.swift      concurrent export, local/iCloud lane partition, inline hashing
+    AdaptiveConcurrency.swift AdaptiveConcurrencyControlling + ExportOutcome
+    LocalAvailability.swift  LocalAvailabilityProviding + PhotosDatabaseLocalAvailability
     AppleScriptExporter.swift  iCloud-only fallback via Photos.app
     PhotosDatabase.swift     Photos.sqlite enrichment reader
     PhotosLibraryPath.swift  library bundle validation
@@ -262,4 +328,4 @@ Tests/
 swift test
 ```
 
-44 tests across 8 suites. All tests use mock implementations — no Photos library, credentials, or network required.
+63 tests. All tests use mock implementations — no Photos library, credentials, or network required.
