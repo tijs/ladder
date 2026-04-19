@@ -4,15 +4,15 @@
 
 # ladder
 
-A Swift library and CLI for accessing the macOS Photos library. LadderKit provides asset discovery, metadata enrichment, and file export via PhotoKit and Photos.sqlite.
+A Swift library for accessing the macOS Photos library. LadderKit provides asset discovery, metadata enrichment, and file export via PhotoKit and Photos.sqlite.
 
-## LadderKit Library
+## Installation
 
 Add LadderKit as a dependency in your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tijs/ladder", from: "0.5.1"),
+    .package(url: "https://github.com/tijs/ladder", from: "0.6.0"),
 ],
 targets: [
     .target(
@@ -62,6 +62,12 @@ PhotosDatabase.enrich(&assets, with: enrichment)
 // keywords, people, description, hasEdit, editedAt, editor
 ```
 
+Or enumerate and enrich in one call:
+
+```swift
+let assets = try PhotoKitLibrary.loadEnrichedAssets(libraryURL: libraryURL)
+```
+
 ### File Export
 
 Export original photo/video files to a staging directory with inline SHA-256 hashing:
@@ -98,7 +104,7 @@ When Photos.app reports `-1728 "Can't get media item"` (typical for shared-album
 
 This approach is inspired by [osxphotos](https://github.com/RhetTbull/osxphotos) (MIT license) by Rhet Turnbull.
 
-**Additional permission required:** The AppleScript fallback needs Automation permission (System Settings > Privacy & Security > Automation > ladder > Photos).
+**Additional permission required:** The AppleScript fallback needs Automation permission (System Settings > Privacy & Security > Automation > *your app* > Photos). Call `exporter.checkPermissions()` to pre-flight before a batch.
 
 ### Adaptive iCloud-lane throttling
 
@@ -198,6 +204,7 @@ let fileHash = try FileHasher.sha256(fileAt: fileURL)
 | **Photos permission** | Call `PHPhotoLibrary.requestAuthorization(for: .readWrite)` before using `PhotoKitLibrary` |
 | **Photos library path** | User selects their `.photoslibrary` bundle. Use `PhotosLibraryPath.validate()` to verify, then `databasePath(for:)` to get the sqlite path. A security-scoped bookmark from `NSOpenPanel` grants file access without Full Disk Access. |
 | **Staging directory** | Provide an absolute path for exported files. Validate with `PathSafety.validateStagingDir()`. |
+| **Automation permission** (only if using `AppleScriptRunner`) | Grant in System Settings > Privacy & Security > Automation. Pre-flight with `PhotoExporter.checkPermissions()`. |
 
 ### Data Types
 
@@ -232,6 +239,8 @@ editor              String?      editor identifier (e.g., "com.apple.photos")
 
 **ExportResult** — `{ uuid: String, path: String, size: Int64, sha256: String }`
 
+**ExportError** — `{ uuid: String, message: String, classification: ExportClassification }`
+
 ### Testability
 
 All external dependencies are behind protocols:
@@ -242,84 +251,30 @@ All external dependencies are behind protocols:
 
 Tests run without Photos library access, Photos permission, or network. See `Tests/PhotoExporterTests.swift` for examples.
 
-## CLI
-
-The CLI wraps LadderKit for use as a subprocess (used by [attic](https://github.com/tijs/attic)).
-
-### Installing
-
-```
-make install
-```
-
-Installs to `/usr/local/bin/ladder`. Use `make install PREFIX=~/.local` for a different location.
-
-### Usage
-
-```bash
-echo '{"uuids":["..."],"stagingDir":"/tmp/staging"}' | ladder
-# or
-ladder request.json
-```
-
-**Input** (`ExportRequest`):
-```json
-{
-  "uuids": ["B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001"],
-  "stagingDir": "/tmp/photo-export"
-}
-```
-
-**Output** (`ExportResponse`):
-```json
-{
-  "results": [
-    {
-      "uuid": "B84E8479-475C-4727-A7F4-B3D5E5D71923/L0/001",
-      "path": "/tmp/photo-export/B84E8479-475C-4727_IMG_0001.HEIC",
-      "size": 3158112,
-      "sha256": "a948904f2f0f479b8f8197694b30184b0d2ed1c1cd2a1ec0fb85d299a192a447"
-    }
-  ],
-  "errors": [
-    { "uuid": "missing-uuid", "message": "Asset not found in Photos library" }
-  ]
-}
-```
-
-### Required permissions
-
-- **Photos access** — grant in System Settings > Privacy & Security > Photos
-- **Full Disk Access** — may be needed depending on library location
-- **Automation** (for iCloud-only assets) — grant in System Settings > Privacy & Security > Automation > ladder > Photos
-
 ## Project structure
 
 ```
-Sources/
-  CLI/
-    Main.swift              entry point, stdin/stdout JSON protocol
-  LadderKit/
-    AssetInfo.swift          AssetInfo, AssetKind, AlbumInfo, PersonInfo
-    PhotoLibrary.swift       PhotoLibrary protocol + PhotoKit implementation
-    PhotoExporter.swift      concurrent export, local/iCloud lane partition, inline hashing
-    AdaptiveConcurrency.swift AdaptiveConcurrencyControlling + ExportOutcome
-    LocalAvailability.swift  LocalAvailabilityProviding + PhotosDatabaseLocalAvailability
-    AppleScriptExporter.swift  iCloud-only fallback via Photos.app
-    PhotosDatabase.swift     Photos.sqlite enrichment reader
-    PhotosLibraryPath.swift  library bundle validation
-    Hasher.swift             StreamingHasher + FileHasher
-    Models.swift             ExportRequest, ExportResponse (CLI types)
-    PathSafety.swift         filename sanitization, path traversal prevention
+Sources/LadderKit/
+  AssetInfo.swift           AssetInfo, AssetKind, AlbumInfo, PersonInfo
+  PhotoLibrary.swift        PhotoLibrary protocol + PhotoKit implementation
+  PhotoExporter.swift       concurrent export, local/iCloud lane partition, inline hashing
+  AdaptiveConcurrency.swift AdaptiveConcurrencyControlling + ExportOutcome
+  LocalAvailability.swift   LocalAvailabilityProviding + PhotosDatabaseLocalAvailability
+  AppleScriptExporter.swift iCloud-only fallback via Photos.app
+  PhotosDatabase.swift      Photos.sqlite enrichment reader
+  PhotosLibraryPath.swift   library bundle validation
+  Hasher.swift              StreamingHasher + FileHasher
+  Models.swift              ExportResult, ExportResponse, ExportError, ExportClassification
+  PathSafety.swift          filename sanitization, path traversal prevention
 Tests/
-    AssetInfoTests.swift
-    PhotoExporterTests.swift
-    AppleScriptExporterTests.swift
-    PhotosDatabaseTests.swift
-    PhotosLibraryPathTests.swift
-    HasherTests.swift
-    ModelsTests.swift
-    PathSafetyTests.swift
+  AssetInfoTests.swift
+  PhotoExporterTests.swift
+  AppleScriptExporterTests.swift
+  PhotosDatabaseTests.swift
+  PhotosLibraryPathTests.swift
+  HasherTests.swift
+  ModelsTests.swift
+  PathSafetyTests.swift
 ```
 
 ## Testing
@@ -328,4 +283,4 @@ Tests/
 swift test
 ```
 
-63 tests. All tests use mock implementations — no Photos library, credentials, or network required.
+58 tests. All tests use mock implementations — no Photos library, credentials, or network required.

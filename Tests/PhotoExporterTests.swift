@@ -162,7 +162,7 @@ struct PhotoExporterTests {
         #expect(response.results.isEmpty)
         #expect(response.errors.count == 1)
         #expect(response.errors[0].uuid == "shared-1")
-        #expect(response.errors[0].unavailable == true)
+        #expect(response.errors[0].classification == .permanentlyUnavailable)
     }
 
     @Test("sanitizes PHAsset-style identifiers in file paths")
