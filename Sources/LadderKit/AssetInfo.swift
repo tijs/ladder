@@ -5,12 +5,13 @@ import Foundation
 /// Core fields (identifier, dates, dimensions, location) are populated
 /// from PhotoKit during enumeration. All other fields (filename, albums,
 /// keywords, people, description, edits) come from Photos.sqlite via
-/// ``PhotosDatabase`` enrichment.
+/// ``PhotosDatabase`` enrichment. The optional ``cloudIdentifier`` is
+/// populated separately via ``CloudIdentityResolving``.
 public struct AssetInfo: Sendable, Codable {
     // MARK: - PhotoKit fields (set during enumeration)
 
     public let identifier: String
-    public let uuid: String
+    public let cloudIdentifier: String?
     public let creationDate: Date?
     public let kind: AssetKind
     public let pixelWidth: Int
@@ -31,8 +32,22 @@ public struct AssetInfo: Sendable, Codable {
     public var editedAt: Date?
     public var editor: String?
 
+    /// Canonical asset uuid. Prefers ``cloudIdentifier`` when available
+    /// (stable across all devices in the same iCloud Photos library); falls
+    /// back to the device-local UUID prefix of ``identifier``.
+    public var uuid: String {
+        cloudIdentifier ?? Self.extractUUIDPrefix(from: identifier)
+    }
+
+    /// The device-local UUID prefix of ``identifier``. Stable for as long as
+    /// the asset exists on this device, but differs across devices for the
+    /// same iCloud asset.
+    public var legacyLocalIdentifier: String {
+        Self.extractUUIDPrefix(from: identifier)
+    }
+
     enum CodingKeys: String, CodingKey {
-        case identifier, uuid, creationDate, kind
+        case identifier, cloudIdentifier, creationDate, kind
         case pixelWidth, pixelHeight, latitude, longitude, isFavorite
         case originalFilename, uniformTypeIdentifier, hasEdit
         case albums, keywords, people
@@ -42,6 +57,7 @@ public struct AssetInfo: Sendable, Codable {
 
     public init(
         identifier: String,
+        cloudIdentifier: String? = nil,
         creationDate: Date?,
         kind: AssetKind,
         pixelWidth: Int,
@@ -60,12 +76,7 @@ public struct AssetInfo: Sendable, Codable {
         editor: String? = nil
     ) {
         self.identifier = identifier
-        // Extract UUID from PhotoKit localIdentifier format "UUID/L0/001"
-        if let slashIndex = identifier.firstIndex(of: "/") {
-            self.uuid = String(identifier[identifier.startIndex..<slashIndex])
-        } else {
-            self.uuid = identifier
-        }
+        self.cloudIdentifier = cloudIdentifier
         self.creationDate = creationDate
         self.kind = kind
         self.pixelWidth = pixelWidth
@@ -82,6 +93,40 @@ public struct AssetInfo: Sendable, Codable {
         self.assetDescription = assetDescription
         self.editedAt = editedAt
         self.editor = editor
+    }
+
+    /// Returns a copy with cloud identity applied from a resolver result.
+    /// `.notFound`, `.multipleFound`, and `.error` keep ``cloudIdentifier``
+    /// nil so ``uuid`` falls back to the local UUID prefix.
+    public func withResolvedCloudIdentity(_ result: CloudMappingResult) -> AssetInfo {
+        guard case .cloud(let cloudId) = result else { return self }
+        return AssetInfo(
+            identifier: identifier,
+            cloudIdentifier: cloudId,
+            creationDate: creationDate,
+            kind: kind,
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight,
+            latitude: latitude,
+            longitude: longitude,
+            isFavorite: isFavorite,
+            originalFilename: originalFilename,
+            uniformTypeIdentifier: uniformTypeIdentifier,
+            hasEdit: hasEdit,
+            albums: albums,
+            keywords: keywords,
+            people: people,
+            assetDescription: assetDescription,
+            editedAt: editedAt,
+            editor: editor
+        )
+    }
+
+    private static func extractUUIDPrefix(from identifier: String) -> String {
+        if let slashIndex = identifier.firstIndex(of: "/") {
+            return String(identifier[identifier.startIndex..<slashIndex])
+        }
+        return identifier
     }
 }
 

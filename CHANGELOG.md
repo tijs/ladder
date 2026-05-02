@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0
+
+Cross-device asset identity. Adds an optional cloud-stable identifier so
+callers can correlate the same iCloud Photos asset across multiple Macs
+signed into the same library.
+
+- `AssetInfo.cloudIdentifier: String?` — new optional field. When set,
+  `AssetInfo.uuid` resolves to the cloud identifier; otherwise it falls back
+  to the device-local UUID prefix of `identifier` (existing behavior).
+  `AssetInfo.legacyLocalIdentifier` is exposed as a computed property so
+  callers can persist the legacy id alongside the canonical uuid.
+- `AssetInfo.withResolvedCloudIdentity(_:)` — non-mutating helper that
+  applies a `CloudMappingResult` to a copy of the asset.
+- `CloudMappingResult` (enum) — stable surface for per-asset resolver
+  outcomes: `.cloud(String)`, `.notFound`, `.multipleFound`, `.error(String)`.
+  Maps `PHPhotosError.identifierNotFound` and `.multipleIdentifiersFound`
+  onto distinct cases so callers don't conflate genuinely-local assets with
+  shared/merged-library collisions.
+- `CloudIdentityResolving` (protocol) + `PhotoKitCloudIdentityResolver` —
+  wraps `PHPhotoLibrary.cloudIdentifierMappings(forLocalIdentifiers:)`.
+  Chunks input at 1000 ids per call (defensive — Apple does not document a
+  cap but warns the API is "expensive"). Retries `.error` results once with
+  a 500ms delay before treating them as terminal, absorbing the iOS
+  18.1.1 / Sequoia 15.x async-quirk where the first call returns spurious
+  errors.
+- `AssetInfo.uuid` is now a computed property derived from
+  `cloudIdentifier ?? legacyLocalIdentifier`. The JSON wire format no longer
+  includes a redundant `uuid` field; existing v0.5.x consumers that
+  decoded `uuid` directly should switch to `identifier` (full localId) or
+  read `uuid` from the new computed accessor after decoding. v1 JSON without
+  `cloudIdentifier` still decodes correctly.
+
 ## 0.5.1
 
 Review-driven fixes on top of 0.5.0. No API removals; additive only.
