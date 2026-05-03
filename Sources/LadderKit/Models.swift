@@ -24,6 +24,16 @@ public struct ExportResult: Codable, Sendable {
         self.size = size
         self.sha256 = sha256
     }
+
+    /// Returns a copy with `uuid` replaced. Use when an upstream caller
+    /// fetches by one identity (e.g. PhotoKit local UUID) but needs to
+    /// publish the result under another (e.g. `PHCloudIdentifier`). Keeping
+    /// this as a method on the type guarantees future fields are preserved
+    /// without each caller having to update its own struct-rebuild
+    /// boilerplate.
+    public func withUUID(_ newUUID: String) -> ExportResult {
+        ExportResult(uuid: newUUID, path: path, size: size, sha256: sha256)
+    }
 }
 
 /// Classifies the nature of an export failure so callers can route it to the
@@ -99,5 +109,13 @@ public struct ExportError: Codable, Sendable {
         try c.encode(message, forKey: .message)
         try c.encode(unavailable, forKey: .unavailable)
         try c.encode(classification, forKey: .classification)
+    }
+
+    /// Returns a copy with `uuid` replaced, preserving `message` and
+    /// `classification` (and the derived `unavailable` legacy flag). Same
+    /// rationale as ``ExportResult/withUUID(_:)`` — keeps identity
+    /// re-mapping at the call site free of struct-rebuild boilerplate.
+    public func withUUID(_ newUUID: String) -> ExportError {
+        ExportError(uuid: newUUID, message: message, classification: classification)
     }
 }

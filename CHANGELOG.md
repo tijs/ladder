@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1
+
+Additive convenience for callers that re-key export results. `attic` (the
+primary consumer) needs to translate exporter outputs from PhotoKit local
+UUIDs to `PHCloudIdentifier`s post-migration. Previously every translation
+site rebuilt the struct field-by-field, which silently drops new fields if
+the type ever grows.
+
+- `ExportResult.withUUID(_:)` — returns a copy with a different `uuid`,
+  preserving `path`, `size`, `sha256` (and any future fields).
+- `ExportError.withUUID(_:)` — returns a copy preserving `message` and
+  `classification` (and the derived `unavailable` legacy flag).
+
+No API removals. Existing struct initializers and field access patterns
+keep working unchanged.
+
 ## 0.6.0
 
 Cross-device asset identity. Adds an optional cloud-stable identifier so

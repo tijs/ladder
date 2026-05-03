@@ -97,4 +97,45 @@ struct ModelsTests {
         #expect(request.uuids == ["abc", "def"])
         #expect(request.stagingDir == "/tmp/test")
     }
+
+    @Test("ExportResult.withUUID swaps uuid and preserves all other fields")
+    func exportResultWithUUID() {
+        let original = ExportResult(
+            uuid: "local-1",
+            path: "/tmp/staging/local-1_IMG.HEIC",
+            size: 12_345,
+            sha256: "deadbeef"
+        )
+        let remapped = original.withUUID("CLOUD-1")
+        #expect(remapped.uuid == "CLOUD-1")
+        #expect(remapped.path == original.path)
+        #expect(remapped.size == original.size)
+        #expect(remapped.sha256 == original.sha256)
+    }
+
+    @Test("ExportError.withUUID swaps uuid and preserves message + classification")
+    func exportErrorWithUUID() {
+        let original = ExportError(
+            uuid: "local-1",
+            message: "transient blip",
+            classification: .transientCloud
+        )
+        let remapped = original.withUUID("CLOUD-1")
+        #expect(remapped.uuid == "CLOUD-1")
+        #expect(remapped.message == original.message)
+        #expect(remapped.classification == .transientCloud)
+        #expect(remapped.unavailable == false)
+    }
+
+    @Test("ExportError.withUUID preserves permanentlyUnavailable derived flag")
+    func exportErrorWithUUIDUnavailable() {
+        let original = ExportError(
+            uuid: "local-1",
+            message: "gone",
+            classification: .permanentlyUnavailable
+        )
+        let remapped = original.withUUID("CLOUD-1")
+        #expect(remapped.classification == .permanentlyUnavailable)
+        #expect(remapped.unavailable == true)
+    }
 }
