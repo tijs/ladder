@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0
+
+- Discover Photos album join tables and columns from SQLite schema metadata,
+  fixing album enrichment for the reported macOS 27 `Z_34ASSETS` relationship
+  while retaining support for the older `Z_33ASSETS` shape. Future numbering
+  changes with the same relationship structure are supported too. Fixes #1.
+- Deduplicate album memberships, filter invalid references and trashed records,
+  and return no albums when the relationship schema is unsupported or ambiguous.
+  Other enrichment queries continue independently; database access is read-only.
+- Add synthetic SQLite regression fixtures for old, new, future, unsupported and
+  ambiguous schemas, metadata preservation, and read-only operation. All 96
+  Swift tests pass. A copied or sanitized macOS 27 database has not been validated.
+
+Compatibility changes since 0.6.1, already present on `main`: Ladder now ships
+only the LadderKit library. The CLI executable, its `ExportRequest` model,
+installation scripts and binary-release workflow have been removed.
+`ExportError.unavailable` has also been removed; use
+`classification == .permanentlyUnavailable` instead. Error JSON must now
+include `classification`: migrate legacy payloads to `"permanentlyUnavailable"`
+when `unavailable` was true, or `"other"` otherwise. Missing classifications
+are no longer defaulted during decoding. This release contains source for
+Swift Package Manager and does not include a CLI binary.
+
 ## 0.6.1
 
 Additive convenience for callers that re-key export results. `attic` (the

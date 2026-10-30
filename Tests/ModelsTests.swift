@@ -72,10 +72,9 @@ struct ModelsTests {
         #expect(remapped.uuid == "CLOUD-1")
         #expect(remapped.message == original.message)
         #expect(remapped.classification == .transientCloud)
-        #expect(remapped.unavailable == false)
     }
 
-    @Test("ExportError.withUUID preserves permanentlyUnavailable derived flag")
+    @Test("ExportError.withUUID preserves permanentlyUnavailable classification")
     func exportErrorWithUUIDUnavailable() {
         let original = ExportError(
             uuid: "local-1",
@@ -84,6 +83,7 @@ struct ModelsTests {
         )
         let remapped = original.withUUID("CLOUD-1")
         #expect(remapped.classification == .permanentlyUnavailable)
-        #expect(remapped.unavailable == true)
+        #expect(remapped.uuid == "CLOUD-1")
+        #expect(remapped.message == original.message)
     }
 }
