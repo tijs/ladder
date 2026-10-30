@@ -12,7 +12,7 @@ Add LadderKit as a dependency in your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/tijs/ladder", from: "0.6.0"),
+    .package(url: "https://github.com/tijs/ladder", from: "0.7.0"),
 ],
 targets: [
     .target(
@@ -67,6 +67,19 @@ Or enumerate and enrich in one call:
 ```swift
 let assets = try PhotoKitLibrary.loadEnrichedAssets(libraryURL: libraryURL)
 ```
+
+Album enrichment discovers the relationship from SQLite schema metadata rather than the
+macOS version. It supports `Z_33ASSETS`, the reported macOS 27 `Z_34ASSETS` shape, and
+other `Z_<number>ASSETS` tables with exactly one numbered asset column and one matching
+`Z_<number>ALBUMS` column. `ZGENERICALBUM` must provide `Z_PK`, `ZUUID`, and `ZTITLE`.
+Memberships are deduplicated by album UUID and ordered by UUID. Trashed assets,
+unknown asset references, and albums without a UUID or title are excluded; trashed
+albums are also excluded when `ZTRASHEDSTATE` is available.
+
+If the album schema is missing, unsupported, or has multiple valid join tables,
+album enrichment returns an empty map while the other enrichment queries continue
+independently. All database access remains read-only. Compatibility tests use
+synthetic databases; a copied or sanitized macOS 27 library has not yet been validated.
 
 ### File Export
 
@@ -283,4 +296,5 @@ Tests/
 swift test
 ```
 
-58 tests. All tests use mock implementations — no Photos library, credentials, or network required.
+96 tests using mock implementations and disposable synthetic SQLite fixtures — no Photos library,
+credentials, or network required.

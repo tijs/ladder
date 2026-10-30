@@ -200,6 +200,51 @@ extension PhotosDatabase {
 // MARK: - Enrichment Queries
 
 extension PhotosDatabase {
+    private struct AlbumJoin {
+        let table: String
+        let assetColumn: String
+        let albumColumn: String
+    }
+
+    /// Core Data relationship identifiers are Z_<ASCII digits><relationship>.
+    private static func relationshipNumber(_ identifier: String, suffix: String) -> String? {
+        guard identifier.hasPrefix("Z_"), identifier.hasSuffix(suffix) else { return nil }
+        let number = identifier.dropFirst(2).dropLast(suffix.count)
+        guard !number.isEmpty, number.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+        return String(number)
+    }
+
+    /// Quote introspected identifiers; relationship names are also validated structurally.
+    private static func quotedIdentifier(_ identifier: String) -> String {
+        "\"" + identifier.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+    }
+
+    private static func columnNames(db: OpaquePointer, table: String) -> Set<String> {
+        var columns: Set<String> = []
+        safeQuery(db: db, sql: "PRAGMA table_info(\(quotedIdentifier(table)))") { stmt in
+            if let name = stringColumn(stmt, 1) { columns.insert(name) }
+        }
+        return columns
+    }
+
+    /// Require a single structurally valid join, without preferring an OS version
+    /// or the largest table number. Multiple candidates are unsafe to guess between.
+    private static func discoverAlbumJoin(db: OpaquePointer) -> AlbumJoin? {
+        var candidates: [AlbumJoin] = []
+        safeQuery(db: db, sql: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name") { stmt in
+            guard let table = stringColumn(stmt, 0),
+                  let number = relationshipNumber(table, suffix: "ASSETS") else { return }
+            let columns = columnNames(db: db, table: table)
+            let albumColumn = "Z_\(number)ALBUMS"
+            let assetColumns = columns.filter { relationshipNumber($0, suffix: "ASSETS") != nil }
+            let albumColumns = columns.filter { relationshipNumber($0, suffix: "ALBUMS") != nil }
+            guard albumColumns == [albumColumn], assetColumns.count == 1,
+                  let assetColumn = assetColumns.first else { return }
+            candidates.append(AlbumJoin(table: table, assetColumn: assetColumn, albumColumn: albumColumn))
+        }
+        return candidates.count == 1 ? candidates.first : nil
+    }
+
     private static func buildFilenameMap(
         db: OpaquePointer,
         uuidMap: [Int: String]
@@ -228,21 +273,33 @@ extension PhotosDatabase {
         db: OpaquePointer,
         uuidMap: [Int: String]
     ) -> [String: [AlbumInfo]] {
+        let albumColumns = columnNames(db: db, table: "ZGENERICALBUM")
+        guard albumColumns.isSuperset(of: ["Z_PK", "ZUUID", "ZTITLE"]),
+              let join = discoverAlbumJoin(db: db) else { return [:] }
+        let table = quotedIdentifier(join.table)
+        let assetColumn = quotedIdentifier(join.assetColumn)
+        let albumColumn = quotedIdentifier(join.albumColumn)
+        let trashedFilter = albumColumns.contains("ZTRASHEDSTATE") ? "AND g.ZTRASHEDSTATE = 0" : ""
         var map: [String: [AlbumInfo]] = [:]
+        var seen: [String: Set<String>] = [:]
         safeQuery(
             db: db,
             sql: """
-                SELECT ja.Z_3ASSETS, g.ZUUID, g.ZTITLE
-                FROM Z_33ASSETS ja
-                JOIN ZGENERICALBUM g ON ja.Z_33ALBUMS = g.Z_PK
-                WHERE g.ZTITLE IS NOT NULL
+                SELECT ja.\(assetColumn), g.ZUUID, g.ZTITLE
+                FROM \(table) ja
+                JOIN ZGENERICALBUM g ON ja.\(albumColumn) = g.Z_PK
+                WHERE ja.\(assetColumn) IS NOT NULL AND g.ZUUID IS NOT NULL AND g.ZTITLE IS NOT NULL
+                  \(trashedFilter)
+                ORDER BY ja.\(assetColumn), g.ZUUID, g.ZTITLE
                 """
         ) { stmt in
+            guard sqlite3_column_type(stmt, 0) == SQLITE_INTEGER else { return }
             let assetPK = intColumn(stmt, 0)
             guard let uuid = uuidMap[assetPK],
                   let albumUUID = stringColumn(stmt, 1),
                   let title = stringColumn(stmt, 2)
             else { return }
+            guard seen[uuid, default: []].insert(albumUUID).inserted else { return }
             map[uuid, default: []].append(
                 AlbumInfo(identifier: albumUUID, title: title)
             )
